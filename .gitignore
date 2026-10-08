@@ -3,9 +3,4 @@ __pycache__/
 .pytest_cache/
 dist/
 wheels/
-# internal planning / project documents, not for the public repo
-odissee-*.md
-issue-*.md
-db-tools-design-notes.md
-*.pdf
 docs/_build/
