@@ -1,0 +1,8 @@
+/* Terminal commands: a subtle tint so they stand out from prose. */
+.rst-content .highlight-console .highlight { background: #f3f6fa; border-left: 3px solid #2980b9; }
+
+/* Card footers: muted line. */
+.sd-card-footer { color: #6c757d; font-size: .9em; }
+
+/* Separate API entries a little more. */
+.rst-content dl.py.function, .rst-content dl.py.class { margin-bottom: 1.6em; }

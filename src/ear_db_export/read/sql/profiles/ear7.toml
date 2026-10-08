@@ -1,0 +1,120 @@
+# EAR 7 schema. Verified 2026-10-08 against two live EAR 7 databases (EAR70,
+# EAR_gpu_service) and src/commands/ear_create_database.c of v7priv.
+#
+# Differences vs ear6:
+#   - Jobs/Applications: local_id -> app_id (an integer; in EAR 5-6 Jobs.app_id
+#     was the job name, now app_name), user_id -> user_name, node_id ->
+#     node_name, start/end_mpi_time -> earl_start/end_time, procs -> num_procs,
+#     def_f -> def_cpu_freq, signature_id -> earl_signature_id,
+#     power_signature_id -> eard_signature_id. Jobs.job_type is gone (NULL).
+#   - Signatures: most columns renamed (DC_power -> node_power, GBS ->
+#     dram_bandwidth, FLOPS1..8 -> sp64_ops..dp512_ops, time -> elapsed_time,
+#     avg_f -> avg_cpu_freq, ...). EDP is gone (NULL).
+#   - Periodic_metrics, Power_signatures, GPU_signatures: unchanged (the new
+#     GPU_signatures DCGM columns are not exported; `dump` has them).
+#   - Not covered: builds with Kubernetes support (Jobs keyed by pod_uuid).
+
+[tables.periodic_metrics]
+name = "Periodic_metrics"
+[tables.periodic_metrics.columns]
+id = "id"
+start_time = "start_time"
+end_time = "end_time"
+node_id = "node_id"
+job_id = "job_id"
+step_id = "step_id"
+dc_energy = "DC_energy"
+avg_f = "avg_f"
+temp = "temp"
+dram_energy = "DRAM_energy"
+pck_energy = "PCK_energy"
+gpu_energy = "GPU_energy"
+
+[tables.jobs]
+name = "Jobs"
+[tables.jobs.columns]
+job_id = "job_id"
+step_id = "step_id"
+local_id = "app_id"            # integer app id within the step (was local_id)
+user_id = "user_name"
+user_acc = "user_acc"
+user_group = "user_group"
+app_name = "app_name"
+start_time = "start_time"
+end_time = "end_time"
+start_mpi_time = "earl_start_time"
+end_mpi_time = "earl_end_time"
+policy = "policy"
+threshold = "threshold"
+procs = "num_procs"
+def_f = "def_cpu_freq"
+e_tag = "e_tag"
+
+[tables.applications]
+name = "Applications"
+[tables.applications.columns]
+job_id = "job_id"
+step_id = "step_id"
+local_id = "app_id"
+node_id = "node_name"
+signature_id = "earl_signature_id"
+power_signature_id = "eard_signature_id"
+
+[tables.power_signatures]
+name = "Power_signatures"
+[tables.power_signatures.columns]
+id = "id"
+dc_power = "DC_power"
+dram_power = "DRAM_power"
+pck_power = "PCK_power"
+edp = "EDP"
+max_dc_power = "max_DC_power"
+min_dc_power = "min_DC_power"
+time = "time"
+avg_f = "avg_f"
+def_f = "def_f"
+
+[tables.signatures]
+name = "Signatures"
+[tables.signatures.columns]
+id = "id"
+dc_power = "node_power"
+dram_power = "dram_power"
+pck_power = "pck_power"
+gbs = "dram_bandwidth"
+io_mbs = "io_bandwidth"
+tpi = "TPI"
+cpi = "CPI"
+gflops = "cpu_gflops"
+time = "elapsed_time"
+perc_mpi = "perc_MPI"
+l1_misses = "L1_misses"
+l2_misses = "L2_misses"
+l3_misses = "L3_misses"
+flops_1 = "sp64_ops"
+flops_2 = "sp128_ops"
+flops_3 = "sp256_ops"
+flops_4 = "sp512_ops"
+flops_5 = "dp64_ops"
+flops_6 = "dp128_ops"
+flops_7 = "dp256_ops"
+flops_8 = "dp512_ops"
+instructions = "instructions"
+cycles = "cycles"
+avg_f = "avg_cpu_freq"
+avg_imc_f = "avg_imc_freq"
+def_f = "def_cpu_freq"
+cpu_util = "cpu_util"
+min_gpu_sig_id = "min_GPU_sig_id"
+max_gpu_sig_id = "max_GPU_sig_id"
+
+[tables.gpu_signatures]
+name = "GPU_signatures"
+[tables.gpu_signatures.columns]
+id = "id"
+gpu_power = "GPU_power"
+gpu_freq = "GPU_freq"
+gpu_mem_freq = "GPU_mem_freq"
+gpu_util = "GPU_util"
+gpu_mem_util = "GPU_mem_util"
+gpu_gflops = "GPU_gflops"

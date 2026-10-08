@@ -1,0 +1,111 @@
+# EAR 5.0 - 6.x schema. Verified 2026-10-01 against a live EAR 6.0 database
+# (EAR 6.0.03.25) and the DDL in its edb_create binary. EAR 5.x lacks
+# Signatures.cpu_util and GPU_signatures.GPU_gflops (exported as NULL).
+# Keys: logical names (see ear_db_export.read.TABLES). Values: physical names.
+
+[tables.periodic_metrics]
+name = "Periodic_metrics"
+[tables.periodic_metrics.columns]
+id = "id"
+start_time = "start_time"
+end_time = "end_time"
+node_id = "node_id"
+job_id = "job_id"
+step_id = "step_id"
+dc_energy = "DC_energy"
+avg_f = "avg_f"
+temp = "temp"
+dram_energy = "DRAM_energy"
+pck_energy = "PCK_energy"
+gpu_energy = "GPU_energy"
+
+[tables.jobs]
+name = "Jobs"
+[tables.jobs.columns]
+job_id = "job_id"
+step_id = "step_id"
+local_id = "local_id"
+user_id = "user_id"
+user_acc = "user_acc"
+user_group = "user_group"
+app_name = "app_id"            # app_id holds the application *name* (varchar)
+start_time = "start_time"
+end_time = "end_time"
+start_mpi_time = "start_mpi_time"
+end_mpi_time = "end_mpi_time"
+policy = "policy"
+threshold = "threshold"
+procs = "procs"
+job_type = "job_type"
+def_f = "def_f"
+e_tag = "e_tag"
+
+[tables.applications]
+name = "Applications"
+[tables.applications.columns]
+job_id = "job_id"
+step_id = "step_id"
+local_id = "local_id"
+node_id = "node_id"
+signature_id = "signature_id"
+power_signature_id = "power_signature_id"
+
+[tables.power_signatures]
+name = "Power_signatures"
+[tables.power_signatures.columns]
+id = "id"
+dc_power = "DC_power"
+dram_power = "DRAM_power"
+pck_power = "PCK_power"
+edp = "EDP"
+max_dc_power = "max_DC_power"
+min_dc_power = "min_DC_power"
+time = "time"
+avg_f = "avg_f"
+def_f = "def_f"
+
+[tables.signatures]
+name = "Signatures"
+[tables.signatures.columns]
+id = "id"
+dc_power = "DC_power"
+dram_power = "DRAM_power"
+pck_power = "PCK_power"
+edp = "EDP"
+gbs = "GBS"
+io_mbs = "IO_MBS"
+tpi = "TPI"
+cpi = "CPI"
+gflops = "Gflops"
+time = "time"
+perc_mpi = "perc_MPI"
+l1_misses = "L1_misses"
+l2_misses = "L2_misses"
+l3_misses = "L3_misses"
+flops_1 = "FLOPS1"
+flops_2 = "FLOPS2"
+flops_3 = "FLOPS3"
+flops_4 = "FLOPS4"
+flops_5 = "FLOPS5"
+flops_6 = "FLOPS6"
+flops_7 = "FLOPS7"
+flops_8 = "FLOPS8"
+instructions = "instructions"
+cycles = "cycles"
+avg_f = "avg_f"
+avg_imc_f = "avg_imc_f"
+def_f = "def_f"
+cpu_util = "cpu_util"
+min_gpu_sig_id = "min_GPU_sig_id"
+max_gpu_sig_id = "max_GPU_sig_id"
+
+[tables.gpu_signatures]
+name = "GPU_signatures"
+[tables.gpu_signatures.columns]
+id = "id"
+gpu_power = "GPU_power"
+gpu_freq = "GPU_freq"
+gpu_mem_freq = "GPU_mem_freq"
+gpu_util = "GPU_util"
+gpu_mem_util = "GPU_mem_util"
+gpu_gflops = "GPU_gflops"
