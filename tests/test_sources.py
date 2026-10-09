@@ -65,6 +65,7 @@ def test_scan_without_profile_reads_tables_as_stored():
     def unknown_version():
         eng = make_engine()
         eng.db.execute("ALTER TABLE `Jobs` RENAME COLUMN `user_acc` TO `account`")
+        eng.db.commit()
         eng.ddl["Jobs"] = [("account" if c[0] == "user_acc" else c[0],) + c[1:]
                            for c in eng.ddl["Jobs"]]
         return eng
@@ -100,8 +101,8 @@ def test_info_and_oldest_day():
     assert src.oldest_day() == fakedata.DAY
 
 
-def make_bundle(path, profile="ear6", tables=None):
-    """A bundle of the fakedata records, written by hand (the writer comes with export)."""
+def make_bundle(path, profile="ear6", tables=None, tags=None):
+    """A bundle of the fakedata records, written by hand (as export writes it, without checksums)."""
     files = {}
     for table, t in (tables or physical_tables(profile)).items():
         rel = table + ".parquet"
@@ -109,7 +110,7 @@ def make_bundle(path, profile="ear6", tables=None):
         files[table] = {"files": {rel: {"rows": t.num_rows}}, "rows": t.num_rows}
     manifest = {"format": 1, "files": "parquet", "pseudonymized": False,
                 "source": {"engine": "fake", "profile": profile, "id_step": fakedata.ID_STEP},
-                "node_tags": {"n3": "gpu"}, "tables": files}
+                "node_tags": {"n3": "gpu"} if tags is None else tags, "tables": files}
     with open(os.path.join(path, bundle.MANIFEST), "w") as f:
         json.dump(manifest, f)
     return path

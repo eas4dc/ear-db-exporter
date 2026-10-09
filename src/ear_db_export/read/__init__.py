@@ -1,24 +1,28 @@
-"""Step 1, read: get EAR's records for a period, from whatever store holds them.
+"""Read EAR's tables from wherever they are: its SQL database, or a bundle.
 
 A *record* is a row of one of EAR's own tables (``Periodic_metrics``,
-``Jobs``, ``Applications``, the signature tables), as EAR stores it: epoch
-seconds, ``0`` for "no value", ids that point to other tables. Every reader
-returns records with the same *logical* column names and types, listed in
-:data:`TABLES`, whatever the store and the EAR version. That is the contract
-between step 1 and step 2 (:mod:`ear_db_export.canonical`).
+``Jobs``, ``Applications``, the signature tables, ...), as EAR stores it: epoch
+seconds, ``0`` for "no value", ids that point to other tables. :data:`TABLES`
+lists every table and column with *logical* names, the same for every EAR
+version; schema profiles (:mod:`~ear_db_export.read.sql.profile`) map them to
+each version's physical names.
 
-- :class:`Reader` is the interface a data store implements, one table per
-  method. :class:`ear_db_export.read.sql.SqlReader` implements it for EAR's
-  SQL database.
-- :class:`Records` holds the records of one period. Each table is read the
-  first time a dataset asks for it, and kept for the other datasets of the
-  same period, so ``app_signatures`` and ``gpu_signatures`` read ``Jobs`` once.
+A *source* reads tables as stored (physical names, exact types). Two exist,
+with the same methods, so everything after them works on either:
+
+- :class:`ear_db_export.read.sql.SqlSource`: EAR's SQL database, read-only.
+- :class:`ear_db_export.read.bundle.BundleSource`: a bundle written by ``export``.
+
+Their interface: ``scan(table, where)`` and ``lookup(table, col, keys)`` yield
+``pyarrow.Table`` s of a physical table (``where`` is a DNF filter on logical
+names, see :mod:`ear_db_export.selection`); ``profile`` is the schema profile
+(or ``None``), ``provides`` the physical tables, ``id_step`` the auto-increment
+step, ``info()`` a description for manifests, ``ddl(tables)`` the
+``CREATE TABLE`` statements, ``oldest_day()`` the prune horizon (database
+only), ``close()``.
 """
-from functools import cached_property
-
 import pyarrow as pa
 
-from ..canonical import INPUTS
 
 #: Every table EAR creates, with every column: ``{table: {column: type}}``.
 #: These are the *logical names*: the same for every EAR version, mapped to
@@ -103,7 +107,7 @@ TIME_COLUMNS = {"periodic_metrics": "end_time", "events": "timestamp",
 #: Arrow type of each logical type of :data:`TABLES`.
 ARROW = {"int": pa.int64(), "float": pa.float64(), "str": pa.string(),
          "ts": pa.timestamp("us", tz="UTC")}
-#: Columns that :meth:`Reader.gpu_signatures` adds in front of the
+#: Columns that :attr:`ear_db_export.extract.Records.gpu_signatures` adds in front of the
 #: ``gpu_signatures`` columns: which signature the GPU belongs to, and its
 #: position (0, 1, …) in that signature.
 GPU_LINK = ("signature_id", "gpu_index")
@@ -137,120 +141,3 @@ def arrow_schema(table, columns=None):
     :returns: a ``pyarrow.Schema``.
     """
     return pa.schema([(c, ARROW[col_type(table, c)]) for c in columns or TABLES[table]])
-
-
-class Reader:
-    """Step 1 interface: one subclass per data store.
-
-    Every method returns a ``pyarrow.Table`` with the logical columns and
-    types of :data:`TABLES` (all of them, NULL where the store lacks an
-    optional column). A store that cannot provide a table leaves the method
-    unimplemented and leaves the table out of :attr:`provides`; the pipeline
-    then refuses, before reading anything, a command that needs it. Time
-    windows are Unix seconds, ``start`` included, ``end`` excluded.
-
-    :ivar provides: the record tables this reader can read.
-    :ivar join_keys: columns that link ``Jobs`` and ``Applications``:
-        ``["job_id", "step_id"]``, plus ``"local_id"`` from EAR 5.0.
-    """
-
-    provides = frozenset()
-    join_keys = ["job_id", "step_id"]
-
-    def oldest_day(self):
-        """Return the day of the oldest ``periodic_metrics`` record, or ``None`` if there is none.
-
-        EAR deletes old ``Periodic_metrics`` rows, so this is the *prune
-        horizon*: nothing older can be exported any more.
-        """
-        raise NotImplementedError
-
-    def periodic_metrics(self, start, end):
-        """Return the ``periodic_metrics`` records whose interval ends in ``[start, end)``."""
-        raise NotImplementedError
-
-    def jobs(self, start, end):
-        """Return the ``jobs`` records (one per job step) that end in ``[start, end)``."""
-        raise NotImplementedError
-
-    def applications(self, job_ids):
-        """Return the ``applications`` records (one per step and node) of these jobs."""
-        raise NotImplementedError
-
-    def power_signatures(self, ids):
-        """Return the ``power_signatures`` records with these ids."""
-        raise NotImplementedError
-
-    def signatures(self, ids):
-        """Return the ``signatures`` records (EARL application signatures) with these ids."""
-        raise NotImplementedError
-
-    def gpu_signatures(self, signatures):
-        """Return one row per GPU of these ``signatures`` records.
-
-        How a signature points to its GPUs is a storage detail (EAR's SQL
-        database stores an id range), so the reader resolves it: the result
-        has the :data:`GPU_LINK` columns, then the ``gpu_signatures`` columns
-        without ``id``. GPUs whose row is missing are left out, and
-        ``gpu_index`` keeps its position.
-        """
-        raise NotImplementedError
-
-    def close(self):
-        """Release the connection, if any."""
-
-
-class Records:
-    """The EAR records of one period, read on first use and kept for the period.
-
-    Each attribute is one record table. Reads that depend on other records
-    follow EAR's links: ``applications`` are those of ``jobs``,
-    ``power_signatures`` and ``signatures`` those the ``applications`` point
-    to, ``gpu_signatures`` those of ``signatures``.
-
-    :param reader: a :class:`Reader`.
-    :param start: period start, Unix seconds (included).
-    :param end: period end, Unix seconds (excluded).
-    """
-
-    def __init__(self, reader, start, end):
-        self.reader, self.start, self.end = reader, start, end
-        self.join_keys = reader.join_keys
-
-    @cached_property
-    def periodic_metrics(self):
-        """Node metrics records whose interval ends in the period."""
-        return _inputs("periodic_metrics", self.reader.periodic_metrics(self.start, self.end))
-
-    @cached_property
-    def jobs(self):
-        """Job step records that end in the period."""
-        return _inputs("jobs", self.reader.jobs(self.start, self.end))
-
-    @cached_property
-    def applications(self):
-        """Application records (one per step and node) of :attr:`jobs`."""
-        return _inputs("applications", self.reader.applications(self.jobs["job_id"].to_pylist()))
-
-    @cached_property
-    def power_signatures(self):
-        """Power signatures that :attr:`applications` point to."""
-        return _inputs("power_signatures", self.reader.power_signatures(
-            self.applications["power_signature_id"].to_pylist()))
-
-    @cached_property
-    def signatures(self):
-        """EARL application signatures that :attr:`applications` point to."""
-        return _inputs("signatures", self.reader.signatures(
-            self.applications["signature_id"].to_pylist()))
-
-    @cached_property
-    def gpu_signatures(self):
-        """GPU signatures of :attr:`signatures`, one row per GPU."""
-        gpus = self.reader.gpu_signatures(self.signatures)
-        return gpus.select(list(GPU_LINK) + INPUTS["gpu_signatures"][1:])
-
-
-def _inputs(table, t):
-    """Keep the columns the datasets read (:data:`ear_db_export.canonical.INPUTS`)."""
-    return t.select([c for c in INPUTS[table] if c in t.column_names])

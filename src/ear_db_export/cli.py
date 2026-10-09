@@ -1,106 +1,127 @@
-"""Command line: ``ear-db-export [global flags] <command> [command flags]``.
+"""Command line: ``ear-db-export <check|export|view> [flags]``.
 
 :func:`main` is the entry point of the ``ear-db-export`` command. Another
 program can mount it as one of its own subcommands (see the ``prog`` argument).
 A run goes through these steps (:func:`run`):
 
 1. Parse the flags (:func:`parser`).
-2. Check every setting before connecting: the connection and node tags from
-   ear.conf or the ``--db-*`` flags (:func:`db_settings`), the
-   pseudonymisation key (:func:`pseudonym_key`) and the output formats
-   (:func:`format_settings`).
-3. ``dump`` connects read-only and writes the tables as stored
-   (:func:`ear_db_export.dump.dump`); it needs no schema profile.
-4. The other commands open the reader (:class:`~ear_db_export.read.sql.SqlReader`):
-   connect read-only, choose the schema profile and compare it with the database.
-5. ``check-schema`` prints the account's grants and that comparison. Export
-   commands refuse a mismatch, then run the pipeline
-   (:func:`ear_db_export.pipeline.run`) and log a summary of the files written.
+2. Check every setting before reading anything: the source (a bundle with
+   ``--bundle``, else the database from ear.conf or the ``--db-*`` flags,
+   :func:`db_settings`), the pseudonymisation key (:func:`pseudonym_key`) and
+   the output formats (:func:`format_settings`).
+3. Open the source. For the database: connect read-only, choose the schema
+   profile and compare it with the database.
+4. ``check`` prints the account's grants and that comparison. ``view`` and a
+   filtered ``export`` refuse a mismatch, build the
+   :class:`~ear_db_export.selection.Selection` and run the pipeline
+   (:mod:`ear_db_export.pipeline`), then log a summary of the files written.
 
 Exit codes: ``0`` success, ``1`` runtime error (database, I/O), ``2``
 configuration or schema error (:class:`~ear_db_export.config.ConfigError`).
 """
 import argparse
-import datetime as dt
 import logging
 import sys
 import time
 
-from . import config, dump, formats, pipeline, write
+from . import canonical, config, extract, formats, pipeline, selection
 from .config import ConfigError, DbConf
-from .read.sql import SqlReader, mariadb
+from .read.bundle import BundleSource
+from .read.sql import SqlSource, mariadb
 from .read.sql.profile import available_profiles
 
 log = logging.getLogger("ear_db_export")
 #: The ``--db-*`` flags (argparse names). Either all are given or none.
 DB_FLAGS = ("db_host", "db_port", "db_name", "db_user", "db_password_file")
-#: Commands that write data and therefore need a pseudonymisation decision.
-EXPORTS = tuple(pipeline.COMMANDS) + ("dump",)
-DESCRIPTION = "Read-only export of EAR data to Parquet datasets."
+DESCRIPTION = "Read-only export of EAR data: bundles of its tables, and analysis datasets."
+#: The database engine module (tests replace it).
+ENGINE = mariadb
 
 
-def _date(s):
-    """Parse a ``YYYY-MM-DD`` flag value.
+def _common():
+    """Flags of every command: where the data is, logging, dry-run."""
+    p = argparse.ArgumentParser(add_help=False)
+    g = p.add_argument_group("source")
+    g.add_argument("--conf", help="ear.conf (default: $EAR_ETC/ear/ear.conf or /etc/ear/ear.conf)")
+    g.add_argument("--db-host")
+    g.add_argument("--db-port", type=int)
+    g.add_argument("--db-name")
+    g.add_argument("--db-user")
+    g.add_argument("--db-password-file", help="file whose first line is the password")
+    g.add_argument("--profile", help="schema profile name (%s) or .toml path; default: autodetect"
+                   % ", ".join(available_profiles()))
+    p.add_argument("--log-level", default="INFO", type=str.upper,
+                   choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    p.add_argument("--dry-run", action="store_true",
+                   help="print SQL, EXPLAIN, row counts and target paths; write nothing")
+    return p
 
-    :param s: the flag value.
-    :returns: a ``datetime.date``.
-    :raises ValueError: if the value is not an ISO date (argparse reports it).
-    """
-    return dt.date.fromisoformat(s)
+
+def _data():
+    """Flags of the commands that read data: bundle, filters, periods, output."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--bundle", metavar="DIR", help="read this bundle instead of the database")
+    f = p.add_argument_group("filters (AND across flags, OR within a list)")
+    f.add_argument("--from", dest="from_", type=selection.when, metavar="DATE",
+                   help="YYYY-MM-DD (whole day) or YYYY-MM-DDTHH:MM[:SS] (UTC)")
+    f.add_argument("--to", type=selection.when, metavar="DATE",
+                   help="last day (included), or an exact UTC time (excluded)")
+    f.add_argument("--jobs", help="job ids: 123,456.0 (step),1000-2000,789.sb (batch step)")
+    for name in ("users", "accounts", "groups", "etags", "policies"):
+        f.add_argument("--" + name, help="comma-separated list")
+    f.add_argument("--apps", help="application names; * and ? wildcards")
+    f.add_argument("--nodes", help="nodes, as a Slurm hostlist: n[01-04],gpu1")
+    f.add_argument("--tags", help="nodes of these ear.conf Island tags")
+    f.add_argument("--batch-steps", action="store_true",
+                   help="only the batch step of each job (job granularity)")
+    f.add_argument("--sample", type=int, metavar="N", help="N jobs picked at random (see --seed)")
+    f.add_argument("--seed", type=int, default=0)
+    f.add_argument("--limit", type=int, metavar="N", help="the newest N jobs")
+    o = p.add_argument_group("output")
+    o.add_argument("--out", default=".", help="output directory (default: .)")
+    o.add_argument("--as", dest="as_", choices=["parquet", "csv"], default="parquet",
+                   help="file format (default: parquet)")
+    s = o.add_mutually_exclusive_group()  # a salt, or an explicit opt-out; never both
+    s.add_argument("--salt-file", help="secret key for HMAC pseudonyms of user fields")
+    s.add_argument("--no-pseudonymize", action="store_true", help="write user fields in clear")
+    t = p.add_argument_group("periods")
+    t.add_argument("--every", choices=["day", "month"],
+                   help="one partition per day or month (default: one output)")
+    t.add_argument("--incremental", action="store_true",
+                   help="continue after the last exported day (watermark); for timers")
+    t.add_argument("--lag-days", type=int, default=2,
+                   help="with --incremental: stop this many days before today (default: 2)")
+    t.add_argument("--state", help="watermark file (default: OUT/.ear_export_state.json)")
+    t.add_argument("--update-state", action="store_true",
+                   help="with --from/--to: also advance the watermark")
+    t.add_argument("--overwrite", action="store_true", help="redo partitions that exist")
+    return p
 
 
 def parser(prog="ear-db-export"):
-    """Build the argument parser with the global flags and one subcommand per command.
+    """Build the argument parser: one subcommand per command, flags after the command.
 
     :param prog: program name shown in usage and help, so the parser can be
         mounted as a subcommand of another program.
     :returns: an ``argparse.ArgumentParser``.
     """
     p = argparse.ArgumentParser(prog=prog, description=DESCRIPTION)
-    # Where the DB is: ear.conf, or the five --db-* flags
-    p.add_argument("--conf", help="ear.conf (default: $EAR_ETC/ear/ear.conf or /etc/ear/ear.conf)")
-    g = p.add_argument_group("manual DB connection (instead of ear.conf; give all five)")
-    g.add_argument("--db-host")
-    g.add_argument("--db-port", type=int)
-    g.add_argument("--db-name")
-    g.add_argument("--db-user")
-    g.add_argument("--db-password-file", help="file whose first line is the password")
-    # How to read it and where to write
-    p.add_argument("--profile", help="schema profile name (%s) or .toml path; default: autodetect"
-                   % ", ".join(available_profiles()))
-    p.add_argument("--out", default=".", help="output directory (default: .)")
-    p.add_argument("--format", action="append", default=[], metavar="DATASET=FORMAT",
-                   help="output format of a dataset (default: wide). Repeatable")
-    p.add_argument("--format-opt", action="append", default=[], metavar="KEY=VALUE",
-                   help="option passed to the formats, e.g. service=NAME for long. Repeatable")
-    p.add_argument("--log-level", default="INFO", type=str.upper,
-                   choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    p.add_argument("--dry-run", action="store_true",
-                   help="print SQL, EXPLAIN, row counts, formats and target paths; write nothing")
-    # Pseudonymisation: a salt, or an explicit opt-out; never both
-    s = p.add_mutually_exclusive_group()
-    s.add_argument("--salt-file", help="secret key for HMAC pseudonyms of user fields")
-    s.add_argument("--no-pseudonymize", action="store_true", help="export user fields in clear")
-
-    # One subparser per command
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("check-schema", help="show the account's grants and diff the profile "
-                                        "against the live DB")
-    pp = sub.add_parser("periodic", help="daily node metrics + job allocations (cron)")
-    pp.add_argument("--lag-days", type=int, default=2)
-    pp.add_argument("--state", help="watermark file (default: OUT/.ear_export_state.json)")
-    pp.add_argument("--from", dest="from_", type=_date, metavar="YYYY-MM-DD")
-    pp.add_argument("--to", type=_date, metavar="YYYY-MM-DD")
-    pp.add_argument("--update-state", action="store_true",
-                    help="with --from/--to: also advance the watermark")
-    for name in ("power-signatures", "app-signatures"):
-        sp = sub.add_parser(name, help="one-off monthly dataset (default: last 12 full months)")
-        sp.add_argument("--from", dest="from_", type=_date, metavar="YYYY-MM-DD")
-        sp.add_argument("--to", type=_date, metavar="YYYY-MM-DD")
-        sp.add_argument("--overwrite", action="store_true", help="redo months that exist")
-    dp = sub.add_parser("dump", help="tables as stored: OUT/<Table>.parquet, schema.sql, "
-                                     "manifest.json")
-    dp.add_argument("--tables", help="comma-separated table names (default: every table)")
+    common, data = _common(), _data()
+    sub.add_parser("check", parents=[common], help="show the account's grants and compare the "
+                                                   "schema profile with the database")
+    e = sub.add_parser("export", parents=[common, data],
+                       help="a bundle: the selected tables as stored, schema.sql, SHA256SUMS, "
+                            "manifest.json")
+    e.add_argument("--tables", help="table groups (%s, all) or table names; default jobs,periodic"
+                   % ", ".join(extract.GROUPS))
+    v = sub.add_parser("view", parents=[common, data], help="analysis datasets")
+    v.add_argument("names", nargs="+", choices=sorted(canonical.DATASETS), metavar="DATASET",
+                   help="one or more of: %s" % ", ".join(sorted(canonical.DATASETS)))
+    v.add_argument("--format", action="append", default=[], metavar="DATASET=FORMAT",
+                   help="output format of a dataset (default: wide). Repeatable")
+    v.add_argument("--format-opt", action="append", default=[], metavar="KEY=VALUE",
+                   help="option passed to the formats, e.g. service=NAME for long. Repeatable")
     return p
 
 
@@ -117,10 +138,8 @@ def db_settings(args):
         the password file cannot be read.
     """
     given = [f for f in DB_FLAGS if getattr(args, f) is not None]
-    conf_path = args.conf or config.default_conf_path()
-    # No --db-* flags: everything comes from ear.conf
     if not given:
-        return config.load(conf_path)
+        return config.load(args.conf or config.default_conf_path())
     if len(given) != len(DB_FLAGS):
         raise ConfigError("manual DB connection needs all of --db-host --db-port --db-name "
                           "--db-user --db-password-file")
@@ -131,30 +150,28 @@ def db_settings(args):
     except OSError as e:
         raise ConfigError("cannot read --db-password-file: %s" % e)
     dbconf = DbConf(args.db_host, args.db_port, args.db_name, args.db_user, password)
-    tags = {}
-    if args.conf:  # optional: only for node_tag
-        tags = config.load(args.conf)[1]
-    else:
+    tags = config.load(args.conf)[1] if args.conf else {}
+    if not args.conf:
         log.warning("no --conf: node_tag will be NULL")
     return dbconf, tags
 
 
-def pseudonym_key(args):
+def pseudonym_key(args, source_pseudonymized=False):
     """Read the pseudonymisation key from ``--salt-file``.
 
-    The key is only needed by commands that write data. ``check-schema``,
-    ``--dry-run`` and ``--no-pseudonymize`` need none.
+    A dry-run, ``--no-pseudonymize`` and a bundle whose user fields are already
+    pseudonyms need none.
 
-    :param args: parsed flags (uses ``command``, ``dry_run``, ``salt_file`` and
-        ``no_pseudonymize``).
-    :returns: the key as bytes, or ``None`` when user fields are not pseudonymised.
-    :raises ConfigError: if an export has neither ``--salt-file`` nor
-        ``--no-pseudonymize``, or the salt file is unreadable or empty.
+    :param args: parsed flags (uses ``dry_run``, ``salt_file`` and ``no_pseudonymize``).
+    :param source_pseudonymized: the source is a pseudonymised bundle.
+    :returns: the key as bytes, or ``None`` when user fields are written as they are.
+    :raises ConfigError: if neither ``--salt-file`` nor ``--no-pseudonymize`` is
+        given, or the salt file is unreadable or empty.
     """
-    if args.command not in EXPORTS or args.dry_run or args.no_pseudonymize:
+    if args.dry_run or args.no_pseudonymize or source_pseudonymized:
         return None
     if not args.salt_file:
-        raise ConfigError("give --salt-file (or --no-pseudonymize to export user names in clear)")
+        raise ConfigError("give --salt-file (or --no-pseudonymize to write user names in clear)")
     try:
         with open(args.salt_file, "rb") as f:
             key = f.read().strip()
@@ -166,13 +183,7 @@ def pseudonym_key(args):
 
 
 def _pairs(values, flag):
-    """Split ``KEY=VALUE`` flag values into a dict.
-
-    :param values: the flag values.
-    :param flag: flag name, for the error message.
-    :returns: ``{key: value}``.
-    :raises ConfigError: if a value has no ``=``.
-    """
+    """Split ``KEY=VALUE`` flag values into a dict; ConfigError if a value has no ``=``."""
     bad = [v for v in values if "=" not in v]
     if bad:
         raise ConfigError("%s takes KEY=VALUE, got %s" % (flag, ", ".join(bad)))
@@ -180,93 +191,97 @@ def _pairs(values, flag):
 
 
 def format_settings(args):
-    """Read and check ``--format`` and ``--format-opt``.
+    """Read and check ``--format`` and ``--format-opt`` of ``view``.
 
-    :param args: parsed flags (uses ``command``, ``format`` and ``format_opt``).
     :returns: ``(formats, opts)``: ``{dataset: format name}`` and ``{key: value}``.
-    :raises ConfigError: if a dataset is not written by the command, or a
-        format is unknown for it.
+    :raises ConfigError: if a dataset is not written by this run, or a format is unknown for it.
     """
+    if args.command != "view":
+        return {}, {}
     chosen = _pairs(args.format, "--format")
     opts = _pairs(args.format_opt, "--format-opt")
-    cmd = pipeline.COMMANDS.get(args.command)
-    datasets = cmd.datasets if cmd else ()
     for dataset, name in chosen.items():
-        if dataset not in datasets:
-            raise ConfigError("--format %s=%s: %s writes %s" % (
-                dataset, name, args.command, ", ".join(datasets) or "no datasets"))
+        if dataset not in args.names:
+            raise ConfigError("--format %s=%s: this run writes %s" % (dataset, name,
+                                                                      ", ".join(args.names)))
         formats.resolve(dataset, name)
     return chosen, opts
+
+
+def open_source(args):
+    """Open the source: the bundle of ``--bundle``, or the database.
+
+    :returns: ``(source, node_tags)``.
+    """
+    if getattr(args, "bundle", None):
+        source = BundleSource(args.bundle, args.profile)
+        tags = config.load(args.conf)[1] if args.conf else source.tags
+        return source, tags
+    dbconf, tags = db_settings(args)
+    return SqlSource(dbconf, args.profile, engine=ENGINE, dry_run=args.dry_run,
+                     need_profile=False), tags
 
 
 def run(args):
     """Run one command with already-parsed flags.
 
     :param args: parsed flags from :func:`parser`.
-    :returns: the exit code: ``0``, or ``2`` when ``check-schema`` finds a mismatch.
-    :raises ConfigError: on bad configuration, or if an export finds the
-        database does not match the profile.
+    :returns: the exit code: ``0``, or ``2`` when ``check`` finds a mismatch.
+    :raises ConfigError: on bad configuration, or a database that does not match
+        its profile when the command needs one.
     """
-    # 1. Settings first: fail before connecting if they are wrong
-    dbconf, tags = db_settings(args)
-    key = pseudonym_key(args)
     chosen, opts = format_settings(args)
-    if args.command == "dump":
-        return run_dump(args, dbconf, key)
-    # 2. Open the reader: connect, choose the profile, compare it with the DB
-    reader = SqlReader(dbconf, args.profile, dry_run=args.dry_run)
+    source, tags = open_source(args)
     try:
-        lines, ok = reader.check()
-        if args.command == "check-schema":
-            print("account %s on %s:%d/%s, session read-only: %s\ngrants:\n  %s" % (
-                dbconf.user, dbconf.host, dbconf.port, dbconf.database,
-                "yes" if reader.engine.read_only(reader.conn) else "NO",
-                "\n  ".join(reader.engine.grants(reader.conn))))
-            print("profile %s vs %s:\n%s" % (reader.profile.name, dbconf.database,
-                                              "\n".join(lines)))
-            return 0 if ok else 2
-        if not ok:
-            raise ConfigError("schema does not match profile %s:\n%s"
-                              % (reader.profile.name, "\n".join(lines)))
-        # 3. Read, build, format and write every period of the command
-        settings = pipeline.Settings(args.out, tags, key, chosen, opts, args.dry_run)
-        pipeline.run(args.command, reader, settings, args)
+        if args.command == "check":
+            return _check(source)
+        key = pseudonym_key(args, getattr(source, "pseudonymized", False))
+        sel = selection.from_args(args, tags)
+        _refuse_mismatch(source, args.command == "view" or sel.filters() or bool(args.every))
+        fingerprint = canonical.pseudonym(key, "ear-db-export") if key else \
+            (source.manifest.get("salt_fingerprint") if isinstance(source, BundleSource) else None)
+        settings = pipeline.Settings(args.out, tags, key, fingerprint, chosen, opts, args.dry_run,
+                                     args.as_)
+        if args.command == "export":
+            pipeline.run_export(source, sel, settings, args)
+        else:
+            pipeline.run_view(args.names, source, sel, settings, args)
         _summary(settings.written)
         return 0
     finally:
-        reader.close()
+        source.close()
 
 
-def run_dump(args, dbconf, key):
-    """Run ``dump``: connect read-only and write the tables as stored (no schema profile).
+def _check(source):
+    """Print the account, its grants and the profile comparison (``check``)."""
+    if isinstance(source, BundleSource):
+        raise ConfigError("check reads the database, not a bundle")
+    eng, conn = source.engine, source.conn
+    print("database %s, session read-only: %s\ngrants:\n  %s" % (
+        source.database, "yes" if eng.read_only(conn) else "NO", "\n  ".join(eng.grants(conn))))
+    lines, ok = source.check()
+    print("profile %s vs %s:\n%s" % (source.profile.name if source.profile else "(none)",
+                                      source.database, "\n".join(lines)))
+    return 0 if ok else 2
 
-    :param args: parsed flags (uses ``tables``, ``out`` and ``dry_run``).
-    :param dbconf: the :class:`~ear_db_export.config.DbConf`.
-    :param key: pseudonymisation key, or ``None``.
-    :returns: the exit code, ``0``.
-    """
-    conn = mariadb.connect(dbconf)
-    try:
-        tables = args.tables.split(",") if args.tables else \
-            sorted(mariadb.live_columns(conn, dbconf.database))
-        with write.lock(args.out, args.dry_run):
-            manifest = dump.dump(conn, mariadb, dbconf.database, tables, args.out, key,
-                                 args.dry_run)
-    finally:
-        conn.close()
-    _summary([(t["file"], t["rows"], t["bytes"]) for t in manifest["tables"].values()])
-    return 0
+
+def _refuse_mismatch(source, needed):
+    """Refuse to read through a schema profile that does not match the database."""
+    if not needed or isinstance(source, BundleSource):
+        return
+    lines, ok = source.check()
+    if source.profile is None:
+        raise ConfigError("%s; give --profile (filters and datasets need one)" % lines[0])
+    if not ok:
+        raise ConfigError("schema does not match profile %s:\n%s" % (source.profile.name,
+                                                                     "\n".join(lines)))
 
 
 def _summary(written):
-    """Log the totals and one line per file written in this run.
-
-    :param written: ``(path, rows, bytes)`` per file, from :class:`~ear_db_export.pipeline.Settings`.
-    """
+    """Log the totals and one line per file written in this run."""
     total_rows = sum(r for _, r, _ in written)
     total_bytes = sum(b for _, _, b in written)
-    log.info("summary: %d files, %d rows, %.1f MB", len(written), total_rows,
-             total_bytes / 1e6)
+    log.info("summary: %d files, %d rows, %.1f MB", len(written), total_rows, total_bytes / 1e6)
     for path, rows, nbytes in written:
         log.info("  %s  %d rows  %.1f MB", path, rows, nbytes / 1e6)
 

@@ -29,7 +29,10 @@ class FakeEngine:
         self.__name__ = "fake"
         self.profile, self.step, self.queries = profile, step, []
         self.ddl = ddl_schema(profile)
-        self.db = sqlite3.connect(":memory:")
+        # One shared in-memory database: each connect() is a new connection to it (sources
+        # close theirs), and self.db keeps it alive
+        self.uri = "file:ear%d?mode=memory&cache=shared" % id(self)
+        self.db = sqlite3.connect(self.uri, uri=True)
         for table, cols in self.ddl.items():
             self.db.execute("CREATE TABLE `%s` (%s)" % (table, ", ".join("`%s`" % c[0] for c in cols)))
 
@@ -43,11 +46,12 @@ class FakeEngine:
         self.db.executemany("INSERT INTO `%s` (%s) VALUES (%s)" % (
             table, ", ".join("`%s`" % c for c in cols), ", ".join("?" * len(cols))),
             [tuple(r[c] for c in cols) for r in t.to_pylist()])
+        self.db.commit()
 
     # -- the mariadb functions -------------------------------------------------
 
     def connect(self, db):
-        return self.db
+        return sqlite3.connect(self.uri, uri=True)
 
     def live_columns(self, conn, database):
         return {t: {c: typ.split("(")[0].split()[0] for c, typ, _, _ in cols}
@@ -56,12 +60,12 @@ class FakeEngine:
     def columns(self, conn, database, table):
         return [(c, typ, pk) for c, typ, _, pk in self.ddl.get(table, [])]
 
-    def _run(self, sql, params=()):
+    def _run(self, conn, sql, params=()):
         self.queries.append((sql, list(params)))
-        return self.db.execute(sql.replace("%s", "?"), list(params))
+        return conn.execute(sql.replace("%s", "?"), list(params))
 
     def rows(self, conn, sql, params=()):
-        return tuple(self._run(sql, params).fetchall())
+        return tuple(self._run(conn, sql, params).fetchall())
 
     def scalar(self, conn, sql, params=()):
         if sql == "SELECT VERSION()":
@@ -70,7 +74,7 @@ class FakeEngine:
         return r[0][0] if r else None
 
     def stream(self, conn, sql, params, schema):
-        cur = self._run(sql, params)
+        cur = self._run(conn, sql, params)
         while True:
             chunk = cur.fetchmany(2)  # small batches: exercise multi-batch results
             if not chunk:

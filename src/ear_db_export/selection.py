@@ -255,4 +255,4 @@ def from_args(args, node_tags):
         apps=split(args.apps), etags=split(args.etags), policies=split(args.policies),
         nodes=nodes_of(args.nodes, args.tags, node_tags), batch_steps=args.batch_steps,
         sample=args.sample or 0, seed=args.seed or 0, limit=args.limit or 0,
-        tables=split(args.tables) or Selection.tables)
+        tables=split(getattr(args, "tables", None)) or Selection.tables)

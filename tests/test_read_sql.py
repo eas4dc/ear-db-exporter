@@ -1,12 +1,10 @@
-from types import SimpleNamespace
-
 import pyarrow as pa
 import pytest
 
 from ear_db_export.config import ConfigError
 from ear_db_export.read import arrow_schema, col_type, is_optional
-from ear_db_export.read.sql import SqlReader, mariadb, profile as schema
-from ear_db_export.read.sql.queries import Queries, bisect_id
+from ear_db_export.read.sql import mariadb, profile as schema
+from ear_db_export.read.sql.queries import bisect_id
 
 
 def live_from(profile, drop=()):
@@ -59,13 +57,6 @@ def test_invalid_profile(tmp_path):
         schema.load_profile(str(f))
 
 
-def test_select_aliases_physical_to_logical():
-    p = schema.load_profile("ear6")
-    sql, arrow = Queries(p, mariadb.quote).by_end_time("jobs", 10, 20)[::2]
-    assert "`app_id` AS `app_name`" in sql and sql.endswith("WHERE `end_time` >= %s AND `end_time` < %s")
-    assert arrow.names[0] == "job_id"
-
-
 def test_bisect_id_finds_neighbours():
     # ids with gaps; end_time not monotonic within the margin
     rows = {1: 100, 2: 110, 5: 105, 6: 200, 9: 210}
@@ -75,25 +66,13 @@ def test_bisect_id_finds_neighbours():
     assert bisect_id(probe, 300, 1, 9) == (9, None)
 
 
-def test_gpu_signatures_use_the_galera_id_step():
-    # Signature 7 has GPU ids 11..17 with step 2: 11, 13, 15, 17; 13 has no row
-    r = SqlReader.__new__(SqlReader)  # no connection: only gpu_signatures is exercised
-    r.conn, r.dry_run = None, False
-    r.engine = SimpleNamespace(id_step=lambda conn: 2)
-    looked_up = []
-
-    def fetch_in(table, col, keys):
-        looked_up.extend(keys)
-        rows = [{"id": i, "gpu_power": float(i)} for i in (11, 15, 17)]
-        return pa.Table.from_pylist(rows, schema=arrow_schema("gpu_signatures"))
-    r._fetch_in = fetch_in
-    sigs = pa.table({"id": [7, 8], "min_gpu_sig_id": [11, None], "max_gpu_sig_id": [17, None]})
-    out = r.gpu_signatures(sigs)
-    assert looked_up == [11, 13, 15, 17]
-    assert out.select(["signature_id", "gpu_index", "gpu_power"]).to_pylist() == [
-        {"signature_id": 7, "gpu_index": 0, "gpu_power": 11.0},
-        {"signature_id": 7, "gpu_index": 2, "gpu_power": 15.0},
-        {"signature_id": 7, "gpu_index": 3, "gpu_power": 17.0}]
+@pytest.mark.parametrize("column_type, expected", [
+    ("int(10) unsigned", pa.uint32()), ("bigint(20) unsigned", pa.uint64()), ("int(11)", pa.int32()),
+    ("smallint(5) unsigned", pa.uint16()), ("float", pa.float32()), ("double", pa.float64()),
+    ("varchar(64)", pa.string()), ("uuid", pa.string()), ("timestamp", pa.timestamp("us", "UTC")),
+])
+def test_arrow_type(column_type, expected):
+    assert mariadb.arrow_type(column_type) == expected
 
 
 # == Profiles are total over EAR's DDL =============================================

@@ -12,13 +12,12 @@ from ear_db_export.read.sql import SqlSource
 from ear_db_export.selection import BATCH_STEPS, Selection, parse_jobs
 
 import fakedata
-import make_golden
 from fakedb import DBCONF, make_engine
 from test_sources import make_bundle
 
 T0, DAY_S = fakedata.T0, 86400
 MONTH = (T0 - 3 * DAY_S, T0 + 28 * DAY_S)  # July 2026
-GOLDEN = make_golden.GOLDEN
+GOLDEN = fakedata.GOLDEN
 
 
 def sql_source(profile="ear6"):
@@ -46,7 +45,7 @@ def test_records_views_equal_golden(tmp_path, make):
               ("wide", "gpu_signatures", "wide", MONTH, "month=2026-07")]
     for variant, name, fmt, (start, end), part in checks:
         records = extract.Records(src, Selection(start=start, end=end))
-        table = canonical.DATASETS[name].build(records, make_golden.TAGS, make_golden.KEY)
+        table = canonical.DATASETS[name].build(records, fakedata.TAGS, fakedata.KEY)
         path = str(tmp_path / ("%s-%s.parquet" % (name, fmt)))
         write.parquet(path, formats.apply(name, fmt, table, {"service": "snellius"}))
         out, want = pq.ParquetFile(path).read(), golden(variant, name, part)
@@ -87,6 +86,7 @@ def test_jobs_steps_and_batch_steps():
 def test_batch_steps_keeps_all_periodic_rows_of_the_job():
     eng = make_engine()
     eng.db.execute("UPDATE `Periodic_metrics` SET `step_id` = 0 WHERE `id` = 4")  # an srun step
+    eng.db.commit()
     got = read_all(SqlSource(DBCONF, engine=eng), Selection(batch_steps=True, tables=("periodic",)))
     assert got["Periodic_metrics"]["id"].to_pylist() == [4]
     got = read_all(SqlSource(DBCONF, engine=make_engine()),
@@ -118,6 +118,7 @@ def test_loops_and_their_signatures():
     eng.db.execute("INSERT INTO `Loops` (`event`, `size`, `level`, `job_id`, `step_id`, `local_id`, "
                    "`node_id`, `total_iterations`, `signature_id`) VALUES "
                    "(1, 2, 0, 7, 0, 6, 'n2', 10, 101), (1, 2, 0, 9, 0, 0, 'n9', 10, 102)")
+    eng.db.commit()
     got = read_all(SqlSource(DBCONF, engine=eng), Selection(users=("alice",), tables=("loops",)))
     assert got["Loops"]["job_id"].to_pylist() == [7]
     assert got["Signatures"]["id"].to_pylist() == [100, 101]  # apps' and loops', not job 9's

@@ -5,6 +5,7 @@ FLOAT columns as their decimal text, so the views must show 0.1, not the
 float32 value 0.10000000149011612.
 """
 import datetime as dt
+import os
 
 import pyarrow as pa
 
@@ -13,6 +14,10 @@ from ear_db_export.read import GPU_LINK, TABLES, arrow_schema
 DAY = dt.date(2026, 7, 4)
 T0 = int(dt.datetime(2026, 7, 4, tzinfo=dt.timezone.utc).timestamp())
 INT_MAX = 2147483647  # EAR's "unset" for end_mpi_time of non-MPI steps
+#: The view files 0.3.0 wrote from these records (tests/golden/), with these tags and salt.
+GOLDEN = os.path.join(os.path.dirname(__file__), "golden")
+TAGS = {"n2": "cpu", "n3": "gpu"}
+KEY = b"golden-salt"
 
 
 def _table(name, rows):

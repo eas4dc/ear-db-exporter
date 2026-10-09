@@ -1,11 +1,23 @@
-"""Which periods a command exports: days for ``periodic``, months for the signature commands.
+"""Which periods a run writes: one output, or one partition per day or month (``--every``).
 
-A schedule is a generator of :class:`Period`. The pipeline exports every
-dataset of a period, then asks for the next one, so code after a ``yield``
-runs only once the period is fully written. :func:`daily` uses that to move
+A schedule is a generator of :class:`Period`. The pipeline writes every table
+or dataset of a period, then asks for the next one, so code after a ``yield``
+runs only once the period is fully written. :func:`periods` uses that to move
 the *watermark* (the last day fully exported, saved in
-``OUT/.ear_export_state.json``) after each day: a failed run stops before the
-save and resumes from the failed day.
+``OUT/.ear_export_state.json``) after each period: a failed run stops before
+the save and resumes from the failed period.
+
+- ``--every day --incremental``: every day after the watermark up to
+  ``today - --lag-days``; the first run starts at the oldest day still in the
+  database (the *prune horizon*: EAR deletes old ``Periodic_metrics`` rows).
+  This is the daily timer.
+- ``--every day|month --from A --to B``: exactly those days, or the whole
+  months they touch; partitions that exist are skipped unless ``--overwrite``,
+  and the watermark moves only with ``--update-state``.
+- ``--every month`` alone: the last 12 complete months.
+- no ``--every``: one output for the whole selection.
+
+Only finished months are written, so every month partition is complete.
 """
 import datetime as dt
 import json
@@ -26,98 +38,106 @@ PRUNE_WARN_DAYS = 7
 
 @dataclass(frozen=True)
 class Period:
-    """One period to export.
+    """One period to write.
 
-    :ivar start: start, Unix seconds (included).
-    :ivar end: end, Unix seconds (excluded).
-    :ivar partition: ``{"date": day}`` or ``{"month": first day}``, for
-        :func:`ear_db_export.write.partition_path`.
+    :ivar start: start, Unix seconds (included), or ``None`` (no time bound).
+    :ivar end: end, Unix seconds (excluded), or ``None``.
+    :ivar partition: ``{"date": day}``, ``{"month": first day}``, or ``{}`` (one output),
+        for :func:`ear_db_export.write.partition_path`.
     """
 
-    start: int
-    end: int
+    start: object
+    end: object
     partition: dict
 
 
-# == Schedules: (reader, settings, args, datasets) -> iterator of Period ============
+def periods(args, source, out, names, ext="parquet", today=None):
+    """Yield the periods of a run, and move the watermark after each one when asked.
 
-def daily(reader, settings, args, datasets):
-    """Yield the days ``periodic`` exports, and move the watermark after each one.
-
-    Without ``--from/--to``: every day after the watermark up to ``today -
-    --lag-days``; on the first run, from the oldest day still in the database
-    (the *prune horizon*: EAR deletes older ``Periodic_metrics`` rows). With
-    ``--from/--to``: exactly those days, and the watermark moves only with
-    ``--update-state``. The watermark never moves backwards, nor on a dry-run.
-
-    :param reader: the :class:`~ear_db_export.read.Reader`, for the prune horizon.
-    :param settings: the run's :class:`~ear_db_export.pipeline.Settings`.
-    :param args: parsed flags (``state``, ``from_``, ``to``, ``lag_days``, ``update_state``).
-    :param datasets: unused (same signature as :func:`monthly`).
-    :raises ConfigError: on an invalid ``--from/--to`` range.
+    :param args: parsed flags (``every``, ``incremental``, ``from_``, ``to``,
+        ``lag_days``, ``state``, ``update_state``, ``overwrite``, ``dry_run``).
+    :param source: the source, for the prune horizon (``oldest_day()``).
+    :param out: output directory: partitions that exist, and the default watermark file.
+    :param names: tables or datasets of the run; a period is done when all are written.
+    :param ext: output file extension.
+    :param today: today's UTC date (default: now).
+    :raises ConfigError: on an invalid combination of flags or date range.
     """
-    horizon = reader.oldest_day()
-    if horizon is None:
-        log.warning("Periodic_metrics is empty: nothing to export")
+    _check_flags(args)
+    if not args.every:
+        yield Period(None, None, {})
         return
-    log.info("oldest Periodic_metrics row ends on %s (prune horizon)", horizon)
-    state = args.state or os.path.join(settings.out, STATE_FILE)
+    today = today or dt.datetime.now(dt.timezone.utc).date()
+    state = args.state or os.path.join(out, STATE_FILE)
     watermark = load_watermark(state)
-    days = pending_days(args, watermark, horizon, dt.datetime.now(dt.timezone.utc).date())
-    if not days:
-        log.info("up to date (watermark %s, lag %d days)", watermark, args.lag_days)
-        return
-    if days[0] < horizon + dt.timedelta(PRUNE_WARN_DAYS):
-        log.warning("earliest pending day %s is within %d days of the prune horizon %s: "
-                    "export soon or data will be lost", days[0], PRUNE_WARN_DAYS, horizon)
-    manual = bool(args.from_)
-    for day in days:
-        log.info("exporting %s", day)
-        yield Period(day_epoch(day), day_epoch(day + dt.timedelta(1)), {"date": day})
-        # The day is written: advance the watermark, unless this is a manual re-export
-        if settings.dry_run or (manual and not args.update_state):
+    if args.incremental:
+        horizon = source.oldest_day()
+        if horizon is None:
+            log.warning("Periodic_metrics is empty: nothing to export")
+            return
+        log.info("oldest Periodic_metrics row ends on %s (prune horizon)", horizon)
+        if watermark is None:
+            log.warning("no state file: starting at the oldest day in the DB (%s), which is "
+                        "partial because older rows were pruned", horizon)
+        first = watermark + dt.timedelta(1) if watermark else horizon
+        last = today - dt.timedelta(args.lag_days)
+        if first <= last and first < horizon + dt.timedelta(PRUNE_WARN_DAYS):
+            log.warning("earliest pending day %s is within %d days of the prune horizon %s: "
+                        "export soon or data will be lost", first, PRUNE_WARN_DAYS, horizon)
+    elif args.every == "month":
+        default_from, default_to = default_range(today)
+        first, last = args.from_ or default_from, args.to or default_to
+    elif args.from_ and args.to:
+        first, last = args.from_, args.to
+    else:
+        raise ConfigError("--every day needs --from and --to, or --incremental")
+    if first > last:
+        if args.incremental:
+            log.info("up to date (watermark %s, lag %d days)", watermark, args.lag_days)
+            return
+        raise ConfigError("--from %s is after --to %s" % (first, last))
+    for p0, p1 in _split(args.every, first, last):
+        partition = {"date": p0} if args.every == "day" else {"month": p0}
+        label = p0.isoformat() if args.every == "day" else p0.strftime("%Y-%m")
+        if p1 > today:
+            log.warning("%s has not ended yet: skipped", label)
             continue
-        if watermark is None or day > watermark:  # never move the watermark backwards
-            save_watermark(state, day)
-            watermark = day
+        if not args.incremental and not args.overwrite and \
+                all(os.path.exists(partition_path(out, n, partition, ext)) for n in names):
+            log.info("%s exists, skipping (use --overwrite to redo)", label)
+            continue
+        log.info("exporting %s", label)
+        yield Period(day_epoch(p0), day_epoch(p1), partition)
+        # The period is written: advance the watermark, never backwards, never on a dry-run
+        done = p1 - dt.timedelta(1)
+        if not args.dry_run and (args.incremental or args.update_state) and \
+                (watermark is None or done > watermark):
+            save_watermark(state, done)
+            watermark = done
 
 
-def monthly(reader, settings, args, datasets):
-    """Yield the calendar months a signature command exports.
+def _check_flags(args):
+    """Refuse the combinations of period flags that have no meaning."""
+    if not args.every and (args.incremental or args.update_state):
+        raise ConfigError("--incremental and --update-state need --every")
+    if args.incremental and (args.from_ or args.to):
+        raise ConfigError("--incremental continues after the watermark: no --from/--to")
+    if args.every and any(isinstance(d, dt.datetime) for d in (args.from_, args.to)):
+        raise ConfigError("--every takes whole days: give --from/--to as YYYY-MM-DD")
 
-    Default range: the last 12 complete months. Only whole, finished months
-    are exported, so every partition holds a complete month: ``--from`` and
-    ``--to`` are widened to the months they fall in, and a month that has not
-    ended yet is skipped. A month whose partitions all exist is skipped unless
-    ``--overwrite`` is given.
 
-    :param reader: unused (same signature as :func:`daily`).
-    :param settings: the run's :class:`~ear_db_export.pipeline.Settings`.
-    :param args: parsed flags (``from_``, ``to``, ``overwrite``).
-    :param datasets: the command's datasets; a month is done when all of them are written.
-    :raises ConfigError: if ``--from`` is after ``--to``.
-    """
-    today = dt.datetime.now(dt.timezone.utc).date()
-    default_from, default_to = default_range(today)
-    frm, to = args.from_ or default_from, args.to or default_to
-    if frm > to:
-        raise ConfigError("--from %s is after --to %s" % (frm, to))
-    ms = months(frm, to)
-    if (frm, to) != (ms[0], _next_month(ms[-1]) - dt.timedelta(1)):
+def _split(every, first, last):
+    """Yield ``(start, end)`` days of each day, or month, from ``first`` to ``last`` (included)."""
+    if every == "day":
+        for d in _days(first, last):
+            yield d, d + dt.timedelta(1)
+        return
+    ms = months(first, last)
+    if (first, last) != (ms[0], _next_month(ms[-1]) - dt.timedelta(1)):
         log.info("exporting whole months: %s .. %s", ms[0].strftime("%Y-%m"),
                  ms[-1].strftime("%Y-%m"))
-    for month in ms:
-        name = month.strftime("%Y-%m")
-        if _next_month(month) > today:
-            log.warning("%s has not ended yet: skipped", name)
-            continue
-        # Skip finished months unless asked to redo them
-        paths = [partition_path(settings.out, d, {"month": month}) for d in datasets]
-        if all(os.path.exists(p) for p in paths) and not args.overwrite:
-            log.info("%s exists, skipping (use --overwrite to redo)", name)
-            continue
-        log.info("exporting %s for %s", ", ".join(datasets), name)
-        yield Period(day_epoch(month), day_epoch(_next_month(month)), {"month": month})
+    for m in ms:
+        yield m, _next_month(m)
 
 
 # == Days and months ===============================================================
@@ -134,32 +154,6 @@ def day_epoch(day):
 def _days(first, last):
     """List every day from ``first`` to ``last``, both included (empty if ``last < first``)."""
     return [first + dt.timedelta(n) for n in range((last - first).days + 1)]
-
-
-def pending_days(args, watermark, horizon_day, today):
-    """Decide which days ``periodic`` exports.
-
-    :param args: parsed flags (uses ``from_``, ``to`` and ``lag_days``).
-    :param watermark: last exported day, or ``None`` on the first run.
-    :param horizon_day: day of the oldest row in ``Periodic_metrics``.
-    :param today: today's UTC date.
-    :returns: the days of ``--from .. --to`` if given; otherwise from the day
-        after the watermark (or the horizon on a first run) to
-        ``today - lag_days``.
-    :raises ConfigError: if only one of ``--from``/``--to`` is given, or
-        ``--from`` is after ``--to``.
-    """
-    # Explicit range: exactly what was asked for
-    if args.from_ or args.to:
-        if not (args.from_ and args.to) or args.from_ > args.to:
-            raise ConfigError("periodic needs both --from and --to, with --from <= --to")
-        return _days(args.from_, args.to)
-    # Incremental: continue after the watermark, or start at the oldest data
-    first = watermark + dt.timedelta(1) if watermark else horizon_day
-    if watermark is None:
-        log.warning("no state file: starting at the oldest day in the DB (%s), which is "
-                    "partial because older rows were pruned", first)
-    return _days(first, today - dt.timedelta(args.lag_days))
 
 
 def _month_start(d):

@@ -1,7 +1,7 @@
 [project]
 name = "ear-db-export"
-version = "0.3.0"
-description = "Read-only export of EAR data to Parquet datasets"
+version = "0.4.0"
+description = "Read-only export of EAR data: bundles of its tables, and analysis datasets"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [

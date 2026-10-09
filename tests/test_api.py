@@ -8,20 +8,24 @@ import inspect
 import os
 import re
 
-from ear_db_export import cli, config, dump, read
-from ear_db_export.read import sql
+from ear_db_export import canonical, cli, config, extract, read, selection
+from ear_db_export.read import bundle, sql
 from ear_db_export.read.sql import mariadb, profile
 
 API = {
     config: ["ConfigError", "DbConf", "DB_KEYS", "default_conf_path", "parse", "load",
              "expand_hostlist"],
-    read: ["TABLES", "Reader", "Records", "arrow_schema"],
-    sql: ["SqlReader"],
+    read: ["TABLES", "OPTIONAL_TABLES", "TIME_COLUMNS", "arrow_schema"],
+    sql: ["SqlSource"],
+    bundle: ["BundleSource"],
     mariadb: ["connect", "read_only", "grants", "rows", "scalar", "stream", "fetch", "explain",
               "live_columns", "columns", "arrow_type", "show_create", "quote", "mogrify",
               "id_step", "TYPE_FAMILY"],
-    profile: ["Profile", "load_profile", "detect", "diff", "available_profiles"],
-    dump: ["dump", "USER_COLUMNS"],
+    profile: ["Profile", "load_profile", "detect", "diff", "available_profiles", "ddl",
+              "ddl_schema"],
+    selection: ["Selection", "parse_jobs"],
+    extract: ["extract", "tables", "Records", "GROUPS"],
+    canonical: ["pseudonym", "pseudonymize", "USER_FIELDS", "USER_COLUMNS", "DATASETS", "INPUTS"],
     cli: ["main"],
 }
 

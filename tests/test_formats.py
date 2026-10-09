@@ -54,9 +54,11 @@ def test_resolve_and_apply():
 
 
 def test_format_settings():
-    args = cli.parser().parse_args(["--format", "node_metrics=long", "--format-opt", "service=s",
-                                    "periodic"])
+    view = ["view", "node_metrics", "job_nodes"]
+    args = cli.parser().parse_args(view + ["--format", "node_metrics=long", "--format-opt",
+                                           "service=s"])
     assert cli.format_settings(args) == ({"node_metrics": "long"}, {"service": "s"})
-    for bad in (["--format", "power_signatures=wide"], ["--format", "node_metrics"]):
+    for bad in (["--format", "power_signatures=wide"], ["--format", "node_metrics"],
+                ["--format", "job_nodes=long"]):
         with pytest.raises(ConfigError):
-            cli.format_settings(cli.parser().parse_args(bad + ["periodic"]))
+            cli.format_settings(cli.parser().parse_args(view + bad))

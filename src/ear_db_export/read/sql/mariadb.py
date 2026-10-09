@@ -1,9 +1,9 @@
-"""MariaDB/MySQL engine of the SQL reader: connection, quoting, and SELECTs streamed into pyarrow.
+"""MariaDB/MySQL engine of the SQL source: connection, quoting, and SELECTs streamed into pyarrow.
 
 This is the only module that knows the database engine: the driver,
 identifier quoting, ``EXPLAIN`` output, ``information_schema`` and type names,
-grants, and the auto-increment step. :class:`~ear_db_export.read.sql.SqlReader`,
-its queries and :mod:`ear_db_export.dump` use only these functions, with ``%s``
+grants, and the auto-increment step. :class:`~ear_db_export.read.sql.SqlSource`
+and its queries use only these functions, with ``%s``
 placeholders, so another engine EAR supports (PostgreSQL) is another module
 with the same functions.
 
@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 #: Rows fetched from the server per round trip in :func:`fetch`.
 BATCH_ROWS = 100_000
-#: ``information_schema`` ``DATA_TYPE`` → logical type, for ``check-schema``.
+#: ``information_schema`` ``DATA_TYPE`` → logical type, for ``check``.
 TYPE_FAMILY = {"tinyint": "int", "smallint": "int", "mediumint": "int", "int": "int",
                "bigint": "int", "float": "float", "double": "float", "decimal": "float",
                "char": "str", "varchar": "str", "text": "str", "uuid": "str",

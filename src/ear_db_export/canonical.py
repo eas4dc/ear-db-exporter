@@ -10,7 +10,7 @@ it, so its schema is the fixed point between the database and the files.
 
 Each dataset is built by one function ``build(records, tags, key)``:
 
-- ``records``: the :class:`ear_db_export.read.Records` of one period (a day
+- ``records``: the :class:`ear_db_export.extract.Records` of one period (a day
   or a month). The function reads only the record tables listed in its
   :data:`DATASETS` entry.
 - ``tags``: ``{node: tag}`` from ear.conf, for the ``node_tag`` column.
@@ -55,6 +55,9 @@ INPUTS = {
 }
 #: Columns that identify a user and are pseudonymised.
 USER_FIELDS = ("user_id", "user_acc", "user_group")
+#: Physical columns that hold a user in some EAR version, pseudonymised in every
+#: table of a bundle that has them.
+USER_COLUMNS = ("user_id", "user_name", "user_acc", "user_group", "pod_user_id")
 #: ``Jobs`` columns holding epoch seconds, converted to timestamps.
 JOB_TIMES = ("start_time", "end_time", "start_mpi_time", "end_mpi_time")
 #: ``Signatures`` columns that are pointers to other rows, not data; not exported.
@@ -227,7 +230,7 @@ def gpu_signatures(records, tags, key):
     Input, ``records.jobs``, ``records.applications`` and
     ``records.signatures`` as in :func:`app_signatures`, and
     ``records.gpu_signatures``, which the reader has already linked to its
-    signature (:meth:`ear_db_export.read.Reader.gpu_signatures`)::
+    signature (:attr:`ear_db_export.extract.Records.gpu_signatures`)::
 
         gpu_signatures:  signature_id  gpu_index  gpu_power  gpu_util  …
                          100           0          200.0      97
@@ -263,14 +266,16 @@ def gpu_signatures(records, tags, key):
 class Dataset:
     """How to build one canonical dataset.
 
-    :ivar inputs: the record tables :attr:`build` reads (see :class:`ear_db_export.read.Records`).
+    :ivar inputs: the record tables :attr:`build` reads (see :class:`ear_db_export.extract.Records`).
     :ivar build: ``build(records, tags, key) -> pyarrow.Table``.
     :ivar empty_warning: logged when a written partition has no rows, if set.
+    :ivar delimiter: field separator when written as CSV.
     """
 
     inputs: tuple
     build: object
     empty_warning: str = ""
+    delimiter: str = ","
 
 
 #: Every canonical dataset, by name.
