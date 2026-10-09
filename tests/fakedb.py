@@ -5,6 +5,7 @@ the sources use, and runs their SQL for real (SQLite accepts the backtick
 quoting, ``LIMIT``, ``BETWEEN`` and ``IN`` they generate), so paging, id
 windows and filters are tested end to end without a server.
 """
+import itertools
 import sqlite3
 
 import pyarrow as pa
@@ -16,6 +17,7 @@ from ear_db_export.read.sql.profile import ddl_schema, load_profile
 import fakedata
 
 DBCONF = DbConf("fake", 3306, "EAR", "reader", "pw")
+_DATABASES = itertools.count()  # a fresh in-memory database name per engine
 
 
 class FakeEngine:
@@ -31,7 +33,7 @@ class FakeEngine:
         self.ddl = ddl_schema(profile)
         # One shared in-memory database: each connect() is a new connection to it (sources
         # close theirs), and self.db keeps it alive
-        self.uri = "file:ear%d?mode=memory&cache=shared" % id(self)
+        self.uri = "file:ear%d?mode=memory&cache=shared" % next(_DATABASES)
         self.db = sqlite3.connect(self.uri, uri=True)
         for table, cols in self.ddl.items():
             self.db.execute("CREATE TABLE `%s` (%s)" % (table, ", ".join("`%s`" % c[0] for c in cols)))
