@@ -112,7 +112,7 @@ def monthly(reader, settings, args, datasets):
             log.warning("%s has not ended yet: skipped", name)
             continue
         # Skip finished months unless asked to redo them
-        paths = [partition_path(settings.out, d, month=month) for d in datasets]
+        paths = [partition_path(settings.out, d, {"month": month}) for d in datasets]
         if all(os.path.exists(p) for p in paths) and not args.overwrite:
             log.info("%s exists, skipping (use --overwrite to redo)", name)
             continue

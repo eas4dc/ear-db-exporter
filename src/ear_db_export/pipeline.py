@@ -103,7 +103,7 @@ def export(name, records, period, settings):
     table = dataset.build(records, settings.tags, settings.key)         # 2. canonical
     fmt = settings.formats.get(name, "wide")
     tables = formats.apply(name, fmt, table, settings.format_opts)      # 3. format
-    path = write.partition_path(settings.out, name, **period.partition)
+    path = write.partition_path(settings.out, name, period.partition)
     if settings.dry_run:
         log.info("[dry-run] would write %s as %s to %s", name, fmt, path)
         return

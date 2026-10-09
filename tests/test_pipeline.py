@@ -146,9 +146,9 @@ def test_reader_without_needed_records_is_refused(tmp_path):
 
 
 def test_partition_path():
-    assert write.partition_path("o", "node_metrics", date=dt.date(2026, 7, 4)) == \
+    assert write.partition_path("o", "node_metrics", {"date": dt.date(2026, 7, 4)}) == \
         "o/node_metrics/date=2026-07-04/part-0.parquet"
-    assert write.partition_path("o", "app_signatures", month=dt.date(2026, 6, 15)) == \
+    assert write.partition_path("o", "app_signatures", {"month": dt.date(2026, 6, 15)}) == \
         "o/app_signatures/month=2026-06/part-0.parquet"
 
 

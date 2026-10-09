@@ -15,10 +15,8 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from ..config import ConfigError
+from ..write import MANIFEST
 from .sql.profile import load_profile
-
-#: The manifest file of a bundle, written last: its presence marks a complete bundle.
-MANIFEST = "manifest.json"
 
 
 class BundleSource:
