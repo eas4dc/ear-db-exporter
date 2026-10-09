@@ -1,10 +1,11 @@
 ear-db-export
 =============
 
-ear-db-export exports what EAR measures (node power and energy, jobs, and
-per-job signatures) from EAR's database to Parquet files, without writing to
-the database. You can analyse those files with standard tools, keep them
-after EAR prunes its tables, or dump the whole database to load it elsewhere.
+ear-db-export reads what EAR measures (node power and energy, jobs, per-job
+signatures, loops, events) from EAR's database, without writing to it, and
+writes it to files: the tables as stored, filtered by dates, jobs, users or
+nodes (a *bundle*, to archive or send elsewhere), or clean datasets for
+analysis with standard tools.
 
 .. grid:: 1 2 2 3
    :gutter: 3
@@ -13,7 +14,7 @@ after EAR prunes its tables, or dump the whole database to load it elsewhere.
       :link: guide
       :link-type: doc
 
-      Install, first run, the commands, daily timer, publishing to a data lake.
+      Install, filters, the commands, bundles, daily timer, sending an extract.
 
       +++
       Start here
@@ -40,7 +41,7 @@ after EAR prunes its tables, or dump the whole database to load it elsewhere.
       :link: architecture
       :link-type: doc
 
-      The four steps, what each may know, how to extend it.
+      The data flow, logical and physical names, what each module may know, how to extend it.
 
       +++
       Start here to read the code
@@ -49,19 +50,19 @@ after EAR prunes its tables, or dump the whole database to load it elsewhere.
       :link: reference
       :link-type: doc
 
-      Every module, in the order an export runs them, and the schema profiles.
+      Every module, in the order a run uses them, and the schema profiles.
 
       +++
-      ``read`` · ``canonical`` · ``formats`` · ``write`` · ``dump``
+      ``selection`` · ``read`` · ``extract`` · ``canonical`` · ``write``
 
    .. grid-item-card:: Python API
       :link: api
       :link-type: doc
 
-      The stable names other programs import: ear.conf, connection, tables, dump.
+      The stable names other programs import: ear.conf, sources, profiles, extract.
 
       +++
-      ``config`` · ``mariadb`` · ``dump``
+      ``config`` · ``read`` · ``extract``
 
 .. toctree::
    :hidden:

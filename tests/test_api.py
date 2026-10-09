@@ -8,7 +8,7 @@ import inspect
 import os
 import re
 
-from ear_db_export import canonical, cli, config, extract, read, selection
+from ear_db_export import canonical, cli, config, eacct, extract, read, selection
 from ear_db_export.read import bundle, sql
 from ear_db_export.read.sql import mariadb, profile
 
@@ -26,6 +26,7 @@ API = {
     selection: ["Selection", "parse_jobs"],
     extract: ["extract", "tables", "Records", "GROUPS"],
     canonical: ["pseudonym", "pseudonymize", "USER_FIELDS", "USER_COLUMNS", "DATASETS", "INPUTS"],
+    eacct: ["COLUMNS", "HEADER"],
     cli: ["main"],
 }
 

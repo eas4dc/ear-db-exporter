@@ -31,20 +31,25 @@ measurements after a while.
 
 ## Files and times
 
-Every dataset is a directory of Parquet files, one per day or month (see
-{doc}`guide` for the commands):
+There are two kinds of files ({doc}`guide` has the commands):
 
-```
-OUT/node_metrics/date=YYYY-MM-DD/part-0.parquet       # periodic, one file per UTC day
-OUT/job_nodes/date=YYYY-MM-DD/part-0.parquet
-OUT/power_signatures/month=YYYY-MM/part-0.parquet     # one file per calendar month
-OUT/app_signatures/month=YYYY-MM/part-0.parquet
-OUT/gpu_signatures/month=YYYY-MM/part-0.parquet
-```
+- **Datasets** (`view`), described on this page: one clean table per subject.
+  Each is one file (`OUT/node_metrics.parquet`), or with `--every` a directory
+  of files, one per day or month:
+
+  ```
+  OUT/node_metrics/date=YYYY-MM-DD/part-0.parquet       # one file per UTC day
+  OUT/job_nodes/date=YYYY-MM-DD/part-0.parquet
+  OUT/power_signatures/month=YYYY-MM/part-0.parquet     # one file per calendar month
+  OUT/app_signatures/month=YYYY-MM/part-0.parquet
+  OUT/gpu_signatures/month=YYYY-MM/part-0.parquet
+  ```
+
+- **Bundles** (`export`): EAR's tables as stored ([below](#bundles-the-tables-as-stored)).
 
 pandas, Polars, DuckDB (`read_parquet('OUT/node_metrics/*/*.parquet',
 hive_partitioning=true)`) and Spark read a directory as one table with a
-`date` or `month` column. Times are UTC timestamps. Missing values are NULL;
+`date` or `month` column. With `--as csv` the files are CSV instead. Times are UTC timestamps. Missing values are NULL;
 EAR stores "no value" as `0`, and the tool turns those zeros into NULL where
 a zero cannot be a real value. A job step belongs to the day or month in
 which it **ended**. Column names are the same whatever the EAR version.
@@ -56,7 +61,7 @@ the same for the same user in every file made with the same secret
 ## node_metrics: node measurements
 
 One row per node and interval, sorted by node and time. A row belongs to the
-day of its `end`. Written by `periodic`.
+day of its `end`. `view node_metrics`.
 
 | column | unit | meaning |
 |---|---|---|
@@ -78,8 +83,8 @@ when EAR could not read them.
 
 ## job_nodes: who ran where, and when
 
-One row per job step and node it ran on, for steps that ended that day. Written
-by `periodic`.
+One row per job step and node it ran on, for steps that ended in the period.
+`view job_nodes`.
 
 | column | unit | meaning |
 |---|---|---|
@@ -102,7 +107,7 @@ the day it ends, so join across several days of `node_metrics`.
 
 ## power_signatures: power of every job step on every node
 
-One row per job step and node. Written by `power-signatures`.
+One row per job step and node. `view power_signatures`.
 
 The `job_*` columns are those of `job_nodes` with a `job_` prefix
 (`job_job_id`, `job_user_id`, …), then `node`, `node_tag`, then:
@@ -123,8 +128,8 @@ power signature is missing are kept with NULL `ps_*` columns.
 
 ## app_signatures: application performance on every node
 
-One row per job step and node where the application ran with EARL. Written by
-`app-signatures`. Columns: `job_*` and `node`, `node_tag` as above, then:
+One row per job step and node where the application ran with EARL.
+`view app_signatures`. Columns: `job_*` and `node`, `node_tag` as above, then:
 
 | column | unit | meaning |
 |---|---|---|
@@ -149,7 +154,7 @@ The counts (instructions to FLOPS) are NULL when the site sets
 
 ## gpu_signatures: GPUs of each application
 
-One row per GPU of each application signature. Written by `app-signatures`.
+One row per GPU of each application signature. `view gpu_signatures`.
 
 | column | unit | meaning |
 |---|---|---|
@@ -182,21 +187,58 @@ where `start`/`end` are the step's `start_time`/`end_time`. To attribute
 `long` metrics: `metrics.labels['node'] = alloc.node AND metrics.timestamp >
 alloc.start AND metrics.timestamp - duration_s < alloc.end`.
 
-## dump: the database as stored
+## eacct: eacct's own CSV layout
 
-`dump` writes EAR's tables as they are in the database, for loading them
-elsewhere or for analyses the datasets above do not cover (loops, events):
+One row per job step and node, with the 153 columns `eacct -l -c` writes (EAR
+6 and 7): `JOBID;STEPID;APPID;USERID;…;NODENAME`, the EARL signature
+(`AVG_CPUFREQ_KHZ` … `DPOPS_512`), `GPU0_*` … `GPU7_*` and the EARD power
+signature (`NODEMGR_*`). Tools that read eacct files (EAR's analytics) can read
+it: `view eacct --as csv` writes it with `;`, like eacct.
+
+Differences with eacct's own output: times and dates are UTC (eacct prints
+local time), numbers are in their shortest form (`310.523`, not `310.523000`),
+empty strings are empty (eacct prints a space), and user fields are
+pseudonymised. Columns EAR's database does not store (stalls, cache hits and
+rates, per-socket temperature and power, GPU temperature) are `0`, as eacct
+prints them when it reads the database; steps without an EARL signature have
+`EARL_ENABLED` 0 and zeros in the signature columns.
+
+(bundles-the-tables-as-stored)=
+## Bundles: the tables as stored
+
+`export` writes EAR's tables as they are in the database, for archiving,
+moving them to another site, or analyses the datasets above do not cover
+(loops, events):
 
 ```
-OUT/<Table>.parquet      # e.g. Jobs.parquet, Periodic_metrics.parquet: every row and column
+OUT/<Table>.parquet      # e.g. Jobs.parquet: the selected rows, every column
+OUT/<Table>/date=YYYY-MM-DD/part-0.parquet          # with --every day (or month=YYYY-MM)
 OUT/schema.sql           # the CREATE TABLE statement of each table
-OUT/manifest.json        # database, server version, start/end time, rows per table, pseudonymised?
+OUT/SHA256SUMS           # checksums: sha256sum -c SHA256SUMS
+OUT/manifest.json        # written last: source, profile, filters, rows and checksum per file
 ```
 
-Unlike the datasets, a dump keeps EAR's own table and column names, which
-change between EAR versions (EAR 7 renamed many), its epoch-second times and
-its `0` for "no value". Column types are exact (unsigned integers stay
-unsigned, `FLOAT` stays 32-bit). User columns (`user_id`, `user_name`,
-`user_acc`, `user_group`, `pod_user_id`) are pseudonymised as above. Tables
-are read one after the other while EAR keeps writing, so a dump is not a
-snapshot of one instant: `manifest.json` has its start and end time.
+Unlike the datasets, a bundle keeps EAR's own table and column names, which
+change between EAR versions (EAR 7 renamed many; `manifest.json` says which
+schema profile applies), its epoch-second times and its `0` for "no value".
+Column types are exact (unsigned integers stay unsigned, `FLOAT` stays 32-bit:
+read through the datasets, a stored 0.1 is 0.1 again). User columns
+(`user_id`, `user_name`, `user_acc`, `user_group`, `pod_user_id`) are
+pseudonymised as above. A bundle can be read back with `--bundle DIR`.
+
+The rows are the selected job steps and every row they point to: their
+applications, power and application signatures, GPU signatures (EAR stores a
+signature's GPUs as an id range, stepping by the server's auto-increment
+step, which the manifest records) and loops; periodic metrics and events of
+those jobs, or of the time range and nodes when no job filter is given. With
+`--every`, every row read for a period is in that period's partition.
+Tables are read one after the other while EAR keeps writing, so a bundle is
+not a snapshot of one instant: `manifest.json` has its start and end time.
+
+Special values worth knowing:
+
+| Value | Meaning |
+|---|---|
+| `step_id` ≥ 4294967280 (0xFFFFFFF0) | Slurm's special steps: 4294967291 the batch script (Slurm ≥ 20.11), 4294967294 the batch step on older Slurm and PBS, 4294967292 extern, 4294967293 interactive |
+| `end_mpi_time` / `earl_end_time` 2147483647 | "not set" (the largest 32-bit time): the step ran without EARL; datasets show it as 2038-01-19 03:14:07 |
+| `job_id` 0 in `Periodic_metrics` | the node was idle |
