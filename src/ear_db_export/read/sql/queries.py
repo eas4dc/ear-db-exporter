@@ -16,6 +16,56 @@ from .. import TABLES, arrow_schema
 
 #: Keys per ``IN (...)`` list.
 IN_BATCH = 5000
+#: SQL of the DNF comparison operators (``in``/``not in`` are rendered apart).
+OPS = {"=": "=", "==": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
+       "like": "LIKE"}
+
+
+def where(quote, dnf):
+    """Render a DNF filter (an OR of ANDs) as a SQL condition with ``%s`` placeholders.
+
+    :param quote: the engine's identifier quoting function.
+    :param dnf: ``[[(column, op, value), ...], ...]`` on physical column names;
+        ``op`` is one of :data:`OPS`, ``in`` or ``not in``.
+    :returns: ``(sql, params)``; ``("", [])`` for an empty filter.
+    """
+    ors, params = [], []
+    for conj in dnf:
+        ands = []
+        for col, op, value in conj:
+            if op in ("in", "not in"):
+                values = list(value)
+                if not values:  # IN () is invalid SQL
+                    ands.append("1=0" if op == "in" else "1=1")
+                    continue
+                ands.append("%s %s (%s)" % (quote(col), op.upper(), ", ".join(["%s"] * len(values))))
+                params += values
+            else:
+                ands.append("%s %s %%s" % (quote(col), OPS[op]))
+                params.append(value)
+        ors.append("(%s)" % " AND ".join(ands) if ands else "1=1")
+    return " OR ".join(ors), params
+
+
+def select(quote, table, columns, conds=(), order=None, limit=None):
+    """Build a SELECT of physical columns.
+
+    :param quote: the engine's identifier quoting function.
+    :param table: physical table name.
+    :param columns: physical column names, in order.
+    :param conds: SQL conditions, joined with AND (each already parenthesised if needed).
+    :param order: column to order by, or ``None``.
+    :param limit: row limit, or ``None``.
+    :returns: the SQL text.
+    """
+    sql = "SELECT %s FROM %s" % (", ".join(quote(c) for c in columns), quote(table))
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    if order:
+        sql += " ORDER BY " + quote(order)
+    if limit:
+        sql += " LIMIT %d" % limit
+    return sql
 
 
 class Queries:
