@@ -122,6 +122,7 @@ FORMATS = {
     "power_signatures": {"wide": wide},
     "app_signatures": {"wide": wide},
     "gpu_signatures": {"wide": wide},
+    "eacct": {"wide": wide},
 }
 
 

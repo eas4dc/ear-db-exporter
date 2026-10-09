@@ -28,6 +28,8 @@ from dataclasses import dataclass
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from .eacct import COLUMNS as EACCT_COLUMNS
+
 log = logging.getLogger(__name__)
 
 #: Timestamp type of every exported time column: seconds, UTC.
@@ -262,6 +264,53 @@ def gpu_signatures(records, tags, key):
     return out.rename_columns(["node" if c == "node_id" else c for c in out.column_names])
 
 
+def eacct(records, tags, key):
+    """``eacct``: one row per job step and node, in the CSV layout of ``eacct -l -c``.
+
+    The 153 columns of EAR 6/7's eacct (:data:`ear_db_export.eacct.COLUMNS`),
+    so tools that read eacct files (ear_analytics) can read an export:
+    ``JOBID … NODENAME``, the EARL signature (0 when the step had none,
+    ``EARL_ENABLED`` 0), ``GPU0_*`` … ``GPU7_*`` and the ``NODEMGR_*`` power
+    signature. Written with ``--as csv`` it uses ``;`` like eacct.
+
+    Differences with eacct: times and dates are UTC (eacct prints local time),
+    numbers are written in their shortest form, empty strings are empty
+    (eacct prints a space), and columns the database does not store are 0
+    (as eacct prints them when it reads the database). User fields are pseudonymised.
+    """
+    t = jobs_x_apps(pseudonymize(records.jobs, key), records.applications, records.join_keys)
+    sigs, ps, gpus = records.signatures, records.power_signatures, records.gpu_signatures
+    sig_pos = pc.index_in(t["signature_id"], value_set=sigs["id"])
+    ps_pos = pc.index_in(t["power_signature_id"], value_set=ps["id"])
+    gpu_pos = {}
+    cols = []
+    for header, table, col, gpu in EACCT_COLUMNS:
+        if table in ("jobs", "applications"):
+            values = t[col]
+        elif table == "signatures":
+            values = pc.take(sigs[col], sig_pos)
+        elif table == "power_signatures":
+            values = pc.take(ps[col], ps_pos)
+        elif table == "gpu_signatures":
+            if gpu not in gpu_pos:
+                g = gpus.filter(pc.equal(gpus["gpu_index"], gpu))
+                gpu_pos[gpu] = (g, pc.index_in(t["signature_id"], value_set=g["signature_id"]))
+            g, pos = gpu_pos[gpu]
+            values = pc.take(g[col], pos)
+        elif header == "EARL_ENABLED":
+            values = pc.cast(pc.is_valid(sig_pos), pa.int64())
+        elif table == "derived":  # JOB_START_DATE / JOB_END_DATE
+            values = pc.strftime(to_ts(t[col]), format="%Y-%m-%d %H:%M:%S")
+        else:
+            values = pa.array([0] * t.num_rows, pa.int64())
+        if pa.types.is_string(values.type):
+            values = pc.fill_null(values, "")
+        else:
+            values = pc.fill_null(values, pa.scalar(0, values.type))
+        cols.append(values)
+    return pa.table(cols, names=[h for h, _, _, _ in EACCT_COLUMNS])
+
+
 @dataclass(frozen=True)
 class Dataset:
     """How to build one canonical dataset.
@@ -287,6 +336,8 @@ DATASETS = {
     "app_signatures": Dataset(("jobs", "applications", "signatures"), app_signatures),
     "gpu_signatures": Dataset(("jobs", "applications", "signatures", "gpu_signatures"),
                               gpu_signatures),
+    "eacct": Dataset(("jobs", "applications", "signatures", "power_signatures", "gpu_signatures"),
+                     eacct, delimiter=";"),
 }
 
 
