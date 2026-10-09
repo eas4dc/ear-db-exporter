@@ -10,8 +10,9 @@
 #   - Signatures: most columns renamed (DC_power -> node_power, GBS ->
 #     dram_bandwidth, FLOPS1..8 -> sp64_ops..dp512_ops, time -> elapsed_time,
 #     avg_f -> avg_cpu_freq, ...). EDP is gone (NULL).
-#   - Periodic_metrics, Power_signatures, GPU_signatures: unchanged (the new
-#     GPU_signatures DCGM columns are not exported; `dump` has them).
+#   - Jobs.def_gpu_freq and the GPU_signatures DCGM columns are new; Loops
+#     renames event -> entry and replaces total_iterations with timestamp.
+#   - Periodic_metrics, Power_signatures, Events: unchanged.
 #   - Not covered: builds with Kubernetes support (Jobs keyed by pod_uuid).
 
 [tables.periodic_metrics]
@@ -49,6 +50,7 @@ threshold = "threshold"
 procs = "num_procs"
 def_f = "def_cpu_freq"
 e_tag = "e_tag"
+def_gpu_f = "def_gpu_freq"
 
 [tables.applications]
 name = "Applications"
@@ -118,3 +120,76 @@ gpu_mem_freq = "GPU_mem_freq"
 gpu_util = "GPU_util"
 gpu_mem_util = "GPU_mem_util"
 gpu_gflops = "GPU_gflops"
+gr_engine_active = "gr_engine_active"
+sm_active = "sm_active"
+sm_occupancy = "sm_occupancy"
+tensor_active = "tensor_active"
+dram_active = "dram_active"
+fp64_active = "fp64_active"
+fp32_active = "fp32_active"
+fp16_active = "fp16_active"
+pcie_tx_bytes = "pcie_tx_bytes"
+pcie_rx_bytes = "pcie_rx_bytes"
+nvlink_tx_bytes = "nvlink_tx_bytes"
+nvlink_rx_bytes = "nvlink_rx_bytes"
+
+[tables.loops]
+name = "Loops"
+[tables.loops.columns]
+event = "entry"
+size = "size"
+level = "level"
+job_id = "job_id"
+step_id = "step_id"
+local_id = "app_id"
+node_id = "node_name"
+timestamp = "timestamp"
+signature_id = "signature_id"
+
+[tables.events]
+name = "Events"
+[tables.events.columns]
+id = "id"
+timestamp = "timestamp"
+event_type = "event_type"
+job_id = "job_id"
+step_id = "step_id"
+value = "value"
+node_id = "node_id"
+
+[tables.periodic_aggregations]
+name = "Periodic_aggregations"
+[tables.periodic_aggregations.columns]
+id = "id"
+start_time = "start_time"
+end_time = "end_time"
+dc_energy = "DC_energy"
+eardbd_host = "eardbd_host"
+
+[tables.global_energy]
+name = "Global_energy"
+[tables.global_energy.columns]
+energy_percent = "energy_percent"
+warning_level = "warning_level"
+time = "time"
+inc_th = "inc_th"
+p_state = "p_state"
+energy_consumed_t1 = "GlobEnergyConsumedT1"
+energy_consumed_t2 = "GlobEnergyConsumedT2"
+energy_limit = "GlobEnergyLimit"
+energy_period_t1 = "GlobEnergyPeriodT1"
+energy_period_t2 = "GlobEnergyPeriodT2"
+energy_policy = "GlobEnergyPolicy"
+
+# Copies of Applications, Jobs and Signatures for the learning phase
+[tables.learning_applications]
+name = "Learning_applications"
+like = "applications"
+
+[tables.learning_jobs]
+name = "Learning_jobs"
+like = "jobs"
+
+[tables.learning_signatures]
+name = "Learning_signatures"
+like = "signatures"

@@ -23,7 +23,8 @@ BATCH_ROWS = 100_000
 #: ``information_schema`` ``DATA_TYPE`` → logical type, for ``check-schema``.
 TYPE_FAMILY = {"tinyint": "int", "smallint": "int", "mediumint": "int", "int": "int",
                "bigint": "int", "float": "float", "double": "float", "decimal": "float",
-               "char": "str", "varchar": "str", "text": "str"}
+               "char": "str", "varchar": "str", "text": "str", "uuid": "str",
+               "timestamp": "ts"}
 #: Integer ``DATA_TYPE`` → bits of the Arrow integer that holds it, for :func:`arrow_type`.
 INT_BITS = {"tinyint": 8, "smallint": 16, "mediumint": 32, "int": 32, "bigint": 64}
 #: Other ``DATA_TYPE`` → Arrow type, for :func:`arrow_type`. ``TIMESTAMP`` is read in
@@ -42,32 +43,29 @@ def quote(name):
     return "`%s`" % name.replace("`", "")
 
 
-def connect(db, read_only=True):
-    """Open a connection, read-only unless asked otherwise.
+def connect(db):
+    """Open a read-only connection.
 
-    With ``read_only`` (the default, and the only mode this package's commands
-    use) the session is set to ``READ ONLY``, so a write fails even if the
-    account has more privileges than expected. ``read_only=False`` is for
-    other programs that load data, with EAR's daemon account
-    (:func:`ear_db_export.config.load` with ``account="daemon"``). The session
-    time zone is UTC, so ``TIMESTAMP`` columns read the same on every server.
+    The session is set to ``READ ONLY``, so a write fails even if the account
+    has more privileges than expected, and its time zone to UTC, so
+    ``TIMESTAMP`` columns read the same on every server. ``net_write_timeout``
+    is raised to 10 minutes: a long streamed scan (``Loops`` has no index) must
+    not be cut when the client pauses to write a file.
 
     :param db: a :class:`~ear_db_export.config.DbConf`, normally with the
         ``DBCommandsUser`` credentials.
-    :param read_only: set the session to ``READ ONLY``.
     :returns: an open ``pymysql`` connection with an unbuffered cursor class.
     :raises pymysql.err.OperationalError: if the server cannot be reached or
         rejects the credentials.
     """
-    log.info("connecting to %s:%d/%s as %s%s", db.host, db.port, db.database, db.user,
-             "" if read_only else " (read-write)")
+    log.info("connecting to %s:%d/%s as %s", db.host, db.port, db.database, db.user)
     conn = pymysql.connect(host=db.host, port=db.port, user=db.user, password=db.password,
                            database=db.database, connect_timeout=30, read_timeout=3600,
                            charset="utf8mb4", cursorclass=pymysql.cursors.SSCursor)
     with conn.cursor() as cur:
         cur.execute("SET time_zone = '+00:00'")
-        if read_only:
-            cur.execute("SET SESSION TRANSACTION READ ONLY")
+        cur.execute("SET SESSION net_write_timeout = 600")
+        cur.execute("SET SESSION TRANSACTION READ ONLY")
     return conn
 
 

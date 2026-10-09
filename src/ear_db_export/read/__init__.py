@@ -18,14 +18,16 @@ from functools import cached_property
 
 import pyarrow as pa
 
-#: The record tables every reader returns: ``{table: {column: type}}``.
+from ..canonical import INPUTS
+
+#: Every table EAR creates, with every column: ``{table: {column: type}}``.
 #: These are the *logical names*: the same for every EAR version, mapped to
 #: each version's own names by the SQL reader's profiles. The type is ``int``,
-#: ``float`` or ``str``. A trailing ``?`` marks a column that may be absent in a
-#: deployment: EAR drops some columns when ``DBReportNodeDetail`` /
-#: ``DBReportSIGDetail`` are 0, some only exist in newer versions, and EAR 7
-#: removed ``Jobs.job_type`` and ``Signatures.EDP``. A reader returns an absent
-#: optional column as NULL.
+#: ``float``, ``str`` or ``ts`` (a SQL ``TIMESTAMP``). A trailing ``?`` marks a
+#: column that may be absent in a deployment: EAR drops some columns when
+#: ``DBReportNodeDetail`` / ``DBReportSIGDetail`` are 0, some only exist in
+#: newer versions, and EAR 7 removed ``Jobs.job_type`` and ``Signatures.EDP``.
+#: An absent optional column reads as NULL.
 TABLES = {
     "periodic_metrics": {
         "id": "int", "start_time": "int", "end_time": "int", "node_id": "str",
@@ -38,7 +40,7 @@ TABLES = {
         "user_id": "str", "user_acc": "str", "user_group": "str", "app_name": "str",
         "start_time": "int", "end_time": "int", "start_mpi_time": "int", "end_mpi_time": "int",
         "policy": "str", "threshold": "float", "procs": "int", "job_type": "int?",
-        "def_f": "int", "e_tag": "str",
+        "def_f": "int", "e_tag": "str", "def_gpu_f": "int?",
     },
     "applications": {
         "job_id": "int", "step_id": "int", "local_id": "int?", "node_id": "str",
@@ -57,15 +59,50 @@ TABLES = {
         **{"flops_%d" % i: "int?" for i in range(1, 9)},
         **{"instructions": "int?", "cycles": "int?", "avg_f": "int", "avg_imc_f": "int",
            "def_f": "int", "cpu_util": "int?", "min_gpu_sig_id": "int", "max_gpu_sig_id": "int"}),
-    "gpu_signatures": {
-        "id": "int", "gpu_power": "float", "gpu_freq": "int", "gpu_mem_freq": "int",
-        "gpu_util": "int", "gpu_mem_util": "int", "gpu_gflops": "float?",
+    "gpu_signatures": dict(
+        {"id": "int", "gpu_power": "float", "gpu_freq": "int", "gpu_mem_freq": "int",
+         "gpu_util": "int", "gpu_mem_util": "int", "gpu_gflops": "float?"},
+        # EAR 7: DCGM metrics
+        **{c: "float?" for c in ("gr_engine_active", "sm_active", "sm_occupancy", "tensor_active",
+                                 "dram_active", "fp64_active", "fp32_active", "fp16_active")},
+        **{c: "int?" for c in ("pcie_tx_bytes", "pcie_rx_bytes", "nvlink_tx_bytes",
+                               "nvlink_rx_bytes")}),
+    "loops": {
+        "event": "int", "size": "int", "level": "int", "job_id": "int", "step_id": "int",
+        "local_id": "int?", "node_id": "str", "total_iterations": "int?", "timestamp": "int?",
+        "signature_id": "int",
+    },
+    "events": {
+        "id": "int", "timestamp": "int", "event_type": "int", "job_id": "int", "step_id": "int",
+        "value": "int", "node_id": "str",
+    },
+    "periodic_aggregations": {
+        "id": "int", "start_time": "int", "end_time": "int", "dc_energy": "int",
+        "eardbd_host": "str",
+    },
+    "global_energy": {
+        "energy_percent": "float", "warning_level": "int", "time": "ts", "inc_th": "float",
+        "p_state": "int", "energy_consumed_t1": "int", "energy_consumed_t2": "int",
+        "energy_limit": "int", "energy_period_t1": "int", "energy_period_t2": "int",
+        "energy_policy": "str",
     },
 }
+# Learning_* are copies of the tables EAR writes outside the learning phase
+for _t in ("applications", "jobs", "signatures"):
+    TABLES["learning_" + _t] = TABLES[_t]
 
+#: Tables a deployment may lack (other EAR builds, or never created): a
+#: missing one is not an error. If present, its required columns are required.
+OPTIONAL_TABLES = frozenset({"loops", "events", "periodic_aggregations", "global_energy",
+                             "learning_applications", "learning_jobs", "learning_signatures"})
+#: The time column of the tables read by time window through their primary key
+#: (no time index in EAR's schema).
+TIME_COLUMNS = {"periodic_metrics": "end_time", "events": "timestamp",
+                "periodic_aggregations": "end_time"}
 
 #: Arrow type of each logical type of :data:`TABLES`.
-ARROW = {"int": pa.int64(), "float": pa.float64(), "str": pa.string()}
+ARROW = {"int": pa.int64(), "float": pa.float64(), "str": pa.string(),
+         "ts": pa.timestamp("us", tz="UTC")}
 #: Columns that :meth:`Reader.gpu_signatures` adds in front of the
 #: ``gpu_signatures`` columns: which signature the GPU belongs to, and its
 #: position (0, 1, …) in that signature.
@@ -183,29 +220,37 @@ class Records:
     @cached_property
     def periodic_metrics(self):
         """Node metrics records whose interval ends in the period."""
-        return self.reader.periodic_metrics(self.start, self.end)
+        return _inputs("periodic_metrics", self.reader.periodic_metrics(self.start, self.end))
 
     @cached_property
     def jobs(self):
         """Job step records that end in the period."""
-        return self.reader.jobs(self.start, self.end)
+        return _inputs("jobs", self.reader.jobs(self.start, self.end))
 
     @cached_property
     def applications(self):
         """Application records (one per step and node) of :attr:`jobs`."""
-        return self.reader.applications(self.jobs["job_id"].to_pylist())
+        return _inputs("applications", self.reader.applications(self.jobs["job_id"].to_pylist()))
 
     @cached_property
     def power_signatures(self):
         """Power signatures that :attr:`applications` point to."""
-        return self.reader.power_signatures(self.applications["power_signature_id"].to_pylist())
+        return _inputs("power_signatures", self.reader.power_signatures(
+            self.applications["power_signature_id"].to_pylist()))
 
     @cached_property
     def signatures(self):
         """EARL application signatures that :attr:`applications` point to."""
-        return self.reader.signatures(self.applications["signature_id"].to_pylist())
+        return _inputs("signatures", self.reader.signatures(
+            self.applications["signature_id"].to_pylist()))
 
     @cached_property
     def gpu_signatures(self):
         """GPU signatures of :attr:`signatures`, one row per GPU."""
-        return self.reader.gpu_signatures(self.signatures)
+        gpus = self.reader.gpu_signatures(self.signatures)
+        return gpus.select(list(GPU_LINK) + INPUTS["gpu_signatures"][1:])
+
+
+def _inputs(table, t):
+    """Keep the columns the datasets read (:data:`ear_db_export.canonical.INPUTS`)."""
+    return t.select([c for c in INPUTS[table] if c in t.column_names])

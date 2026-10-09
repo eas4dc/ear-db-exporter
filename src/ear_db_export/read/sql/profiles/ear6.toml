@@ -109,3 +109,64 @@ gpu_mem_freq = "GPU_mem_freq"
 gpu_util = "GPU_util"
 gpu_mem_util = "GPU_mem_util"
 gpu_gflops = "GPU_gflops"
+
+[tables.loops]
+name = "Loops"
+[tables.loops.columns]
+event = "event"
+size = "size"
+level = "level"
+job_id = "job_id"
+step_id = "step_id"
+local_id = "local_id"
+node_id = "node_id"
+total_iterations = "total_iterations"
+signature_id = "signature_id"
+
+[tables.events]
+name = "Events"
+[tables.events.columns]
+id = "id"
+timestamp = "timestamp"
+event_type = "event_type"
+job_id = "job_id"
+step_id = "step_id"
+value = "value"
+node_id = "node_id"
+
+[tables.periodic_aggregations]
+name = "Periodic_aggregations"
+[tables.periodic_aggregations.columns]
+id = "id"
+start_time = "start_time"
+end_time = "end_time"
+dc_energy = "DC_energy"
+eardbd_host = "eardbd_host"
+
+[tables.global_energy]
+name = "Global_energy"
+[tables.global_energy.columns]
+energy_percent = "energy_percent"
+warning_level = "warning_level"
+time = "time"
+inc_th = "inc_th"
+p_state = "p_state"
+energy_consumed_t1 = "GlobEnergyConsumedT1"
+energy_consumed_t2 = "GlobEnergyConsumedT2"
+energy_limit = "GlobEnergyLimit"
+energy_period_t1 = "GlobEnergyPeriodT1"
+energy_period_t2 = "GlobEnergyPeriodT2"
+energy_policy = "GlobEnergyPolicy"
+
+# Copies of Applications, Jobs and Signatures for the learning phase
+[tables.learning_applications]
+name = "Learning_applications"
+like = "applications"
+
+[tables.learning_jobs]
+name = "Learning_jobs"
+like = "jobs"
+
+[tables.learning_signatures]
+name = "Learning_signatures"
+like = "signatures"

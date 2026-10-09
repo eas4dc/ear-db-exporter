@@ -4,6 +4,7 @@ Removing or renaming any of these is a breaking change: bump the minor version.
 """
 import pytest
 
+import inspect
 import os
 import re
 
@@ -12,7 +13,7 @@ from ear_db_export.read import sql
 from ear_db_export.read.sql import mariadb, profile
 
 API = {
-    config: ["ConfigError", "DbConf", "DB_KEYS", "ACCOUNTS", "default_conf_path", "parse", "load",
+    config: ["ConfigError", "DbConf", "DB_KEYS", "default_conf_path", "parse", "load",
              "expand_hostlist"],
     read: ["TABLES", "Reader", "Records", "arrow_schema"],
     sql: ["SqlReader"],
@@ -37,10 +38,17 @@ def test_main_prog(capsys):
     assert capsys.readouterr().out.startswith("usage: other-tool export")
 
 
-def test_package_never_opens_a_writable_connection():
-    """Only callers outside the package may pass read_only=False to connect()."""
+def test_connect_is_always_read_only():
+    """connect() has no way to open a writable session."""
+    assert list(inspect.signature(mariadb.connect).parameters) == ["db"]
+
+
+def test_package_never_writes():
+    """No statement that changes data or schema anywhere in the package's code."""
     src = os.path.dirname(cli.__file__)
-    writable = re.compile(r"connect\([^)]*read_only\s*=\s*(False|0)")
+    # a string literal that starts a statement changing data or schema ("INSERT INTO t")
+    writes = re.compile(r"[\"']\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|TRUNCATE|GRANT)"
+                        r"\s+\w+\s+[\w`%(]")
     offenders = [os.path.join(d, f) for d, _, files in os.walk(src) for f in files
-                 if f.endswith(".py") and writable.search(open(os.path.join(d, f)).read())]
+                 if f.endswith(".py") and writes.search(open(os.path.join(d, f)).read())]
     assert offenders == []

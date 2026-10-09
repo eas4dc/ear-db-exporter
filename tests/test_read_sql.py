@@ -4,7 +4,7 @@ import pyarrow as pa
 import pytest
 
 from ear_db_export.config import ConfigError
-from ear_db_export.read import arrow_schema, col_type
+from ear_db_export.read import arrow_schema, col_type, is_optional
 from ear_db_export.read.sql import SqlReader, mariadb, profile as schema
 from ear_db_export.read.sql.queries import Queries, bisect_id
 
@@ -13,7 +13,7 @@ def live_from(profile, drop=()):
     """A fake information_schema built from a profile (all types right)."""
     live = {}
     for t, cols in profile.columns.items():
-        types = {"int": "int", "float": "float", "str": "varchar"}
+        types = {"int": "int", "float": "float", "str": "varchar", "ts": "timestamp"}
         live[profile.tables[t]] = {p: types[col_type(t, c)]
                                    for c, p in cols.items() if p not in drop}
     return live
@@ -94,3 +94,69 @@ def test_gpu_signatures_use_the_galera_id_step():
         {"signature_id": 7, "gpu_index": 0, "gpu_power": 11.0},
         {"signature_id": 7, "gpu_index": 2, "gpu_power": 15.0},
         {"signature_id": 7, "gpu_index": 3, "gpu_power": 17.0}]
+
+
+# == Profiles are total over EAR's DDL =============================================
+
+@pytest.mark.parametrize("name", ["ear4", "ear6", "ear7"])
+def test_profile_covers_ddl(name):
+    """Every column EAR creates is mapped, every required mapped column exists, types agree."""
+    p = schema.load_profile(name)
+    ddl = schema.ddl_schema(name)
+    assert sorted(ddl) == sorted(p.tables.values())
+    for t, phys in p.tables.items():
+        cols = {c: typ for c, typ, _, _ in ddl[phys]}
+        mapped = p.columns[t]
+        assert sorted(set(cols) - set(mapped.values())) == [], phys
+        assert [c for c, pc_ in mapped.items() if pc_ not in cols and not is_optional(t, c)] == [], phys
+        base = lambda typ: typ.split("(")[0].split()[0]
+        assert [c for c, pc_ in mapped.items() if pc_ in cols
+                and mariadb.TYPE_FAMILY[base(cols[pc_])] != col_type(t, c)] == [], phys
+
+
+def test_ddl_schema_types_keys_and_nullability():
+    jobs = {c[0]: c[1:] for c in schema.ddl_schema("ear7")["Jobs"]}
+    assert jobs["job_id"] == ("int unsigned", False, True)
+    assert jobs["user_name"] == ("varchar(128)", True, False)
+    ge = {c[0]: c[1:] for c in schema.ddl_schema("ear6")["Global_energy"]}
+    assert ge["time"] == ("timestamp", False, True)
+    assert mariadb.arrow_type(ge["warning_level"][0]) == pa.uint32()
+    apps = {c[0]: c[1:] for c in schema.ddl_schema("ear6")["Applications"]}
+    assert apps["node_id"] == ("varchar(64)", False, True)  # in the primary key: NOT NULL
+
+
+def test_like_copies_columns():
+    p = schema.load_profile("ear4")
+    assert p.columns["learning_jobs"] == p.columns["jobs"] and p.columns["jobs"]["job_id"] == "id"
+
+
+def test_missing_optional_table_is_not_a_mismatch():
+    p = schema.load_profile("ear6")
+    live = live_from(p)
+    del live["Loops"], live["Learning_jobs"]
+    assert schema.detect(live).name == "ear6"
+    lines, ok = schema.diff(p, live, mariadb.TYPE_FAMILY)
+    assert ok and "Loops (loops): TABLE MISSING (optional)" in lines
+    p.bind(live)
+    assert "loops" not in p.tables and "jobs" in p.tables
+
+
+def test_logical_float32_keeps_the_decimal_value():
+    p = schema.load_profile("ear6")
+    phys = pa.table({"id": pa.array([1], pa.uint32()), "DC_power": pa.array([310.523], pa.float32()),
+                     "time": pa.array([0.1], pa.float32())})
+    out = p.logical("power_signatures", phys, ["id", "dc_power", "time", "edp"])
+    assert out.to_pylist() == [{"id": 1, "dc_power": 310.523, "time": 0.1, "edp": None}]
+    assert out.schema.field("dc_power").type == pa.float64()
+    assert p.logical("power_signatures", phys.slice(0, 0)).num_rows == 0
+
+
+def test_physical_inverts_logical_and_where_maps_names():
+    p = schema.load_profile("ear7")
+    t = pa.table({"job_id": [1], "local_id": [2], "app_name": ["x"], "user_id": ["u"]})
+    phys = p.physical("jobs", t)
+    assert phys.column_names == ["job_id", "app_id", "app_name", "user_name"]
+    assert p.logical("jobs", phys, t.column_names).equals(t)
+    assert p.where("jobs", [("user_id", "in", ["u"])]) == [[("user_name", "in", ["u"])]]
+    with pytest.raises(ConfigError, match="job_type"):
+        p.where("jobs", [("job_type", "=", 0)])  # gone in EAR 7

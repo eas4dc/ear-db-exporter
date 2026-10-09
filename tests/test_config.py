@@ -64,13 +64,9 @@ def test_missing_keys_take_ear_defaults(tmp_path):
         ("127.0.0.1", 3306, "EAR", "ear_commands", "")
 
 
-def test_daemon_account_on_request(tmp_path):
+def test_never_the_daemon_account(tmp_path):
     text = "DBUser=writer\nDBPassw=w\nDBCommandsUser=reader\nDBCommandsPassw=r\n"
-    assert load_text(tmp_path, text).user == "reader"
-    db = load_text(tmp_path, text, account="daemon")
-    assert (db.user, db.password) == ("writer", "w")
-    with pytest.raises(config.ConfigError, match="account"):
-        load_text(tmp_path, text, account="root")
+    assert (load_text(tmp_path, text).user, load_text(tmp_path, text).password) == ("reader", "r")
 
 
 def test_bad_port(tmp_path):

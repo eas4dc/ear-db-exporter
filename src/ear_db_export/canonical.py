@@ -32,6 +32,27 @@ log = logging.getLogger(__name__)
 
 #: Timestamp type of every exported time column: seconds, UTC.
 TS = pa.timestamp("s", tz="UTC")
+#: The record columns the datasets read, in this order. The dataset schemas are
+#: a public contract, so logical columns added later (EAR 7's DCGM GPU metrics,
+#: ``def_gpu_f``) stay out of them until a dataset adds them on purpose.
+INPUTS = {
+    "periodic_metrics": ["id", "start_time", "end_time", "node_id", "job_id", "step_id",
+                         "dc_energy", "avg_f", "temp", "dram_energy", "pck_energy", "gpu_energy"],
+    "jobs": ["job_id", "step_id", "local_id", "user_id", "user_acc", "user_group", "app_name",
+             "start_time", "end_time", "start_mpi_time", "end_mpi_time", "policy", "threshold",
+             "procs", "job_type", "def_f", "e_tag"],
+    "applications": ["job_id", "step_id", "local_id", "node_id", "signature_id",
+                     "power_signature_id"],
+    "power_signatures": ["id", "dc_power", "dram_power", "pck_power", "edp", "max_dc_power",
+                         "min_dc_power", "time", "avg_f", "def_f"],
+    "signatures": ["id", "dc_power", "dram_power", "pck_power", "edp", "gbs", "io_mbs", "tpi",
+                   "cpi", "gflops", "time", "perc_mpi", "l1_misses", "l2_misses", "l3_misses"]
+                  + ["flops_%d" % i for i in range(1, 9)]
+                  + ["instructions", "cycles", "avg_f", "avg_imc_f", "def_f", "cpu_util",
+                     "min_gpu_sig_id", "max_gpu_sig_id"],
+    "gpu_signatures": ["id", "gpu_power", "gpu_freq", "gpu_mem_freq", "gpu_util", "gpu_mem_util",
+                       "gpu_gflops"],
+}
 #: Columns that identify a user and are pseudonymised.
 USER_FIELDS = ("user_id", "user_acc", "user_group")
 #: ``Jobs`` columns holding epoch seconds, converted to timestamps.

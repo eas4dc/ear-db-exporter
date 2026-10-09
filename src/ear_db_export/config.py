@@ -5,9 +5,8 @@ this package connects where ``eacct`` connects: keys are case-insensitive,
 ``MariaDB*`` is an alias of ``DB*``, the last occurrence wins, a value ends at
 the next ``=`` and loses all its spaces, and a missing key takes EAR's default.
 
-:func:`load` returns the read-only ``DBCommandsUser`` account unless a caller
-asks for EAR's daemon account (``account="daemon"``, ``DBUser``, which can
-write). The export commands always use ``DBCommandsUser``.
+:func:`load` returns EAR's read-only ``DBCommandsUser`` account, the one
+``eacct`` uses; this package never reads ``DBUser``, the account EAR writes with.
 
 The ``Island=`` lines give each node's ``tag``, which the datasets carry as
 ``node_tag``; their ``Nodes=`` field is a Slurm-style hostlist
@@ -28,12 +27,7 @@ DB_KEYS = {
     "DBDATABASE": ("DBDatabase", "EAR"),
     "DBCOMMANDSUSER": ("DBCommandsUser", "ear_commands"),
     "DBCOMMANDSPASSW": ("DBCommandsPassw", ""),
-    "DBUSER": ("DBUser", "ear_daemon"),
-    "DBPASSW": ("DBPassw", ""),
 }
-#: Accounts :func:`load` can return: ``{account: (user key, password key)}``.
-#: ``commands`` is EAR's read-only account; ``daemon`` is the one EARDBD writes with.
-ACCOUNTS = {"commands": ("DBCOMMANDSUSER", "DBCOMMANDSPASSW"), "daemon": ("DBUSER", "DBPASSW")}
 
 
 class ConfigError(Exception):
@@ -128,30 +122,23 @@ def node_tags(islands):
     return tags
 
 
-def load(path, account="commands"):
-    """Read the DB credentials of one EAR account and the node tags from an ear.conf file.
+def load(path):
+    """Read the read-only DB credentials (``DBCommandsUser``) and the node tags from an ear.conf file.
 
     A database key missing from the file takes EAR's default (:data:`DB_KEYS`),
     as EAR does; each default used is logged.
 
     :param path: path to ear.conf.
-    :param account: ``"commands"`` (``DBCommandsUser``, read-only; what the
-        export commands use) or ``"daemon"`` (``DBUser``, which can write).
     :returns: ``(DbConf, node_tags)``; ``node_tags`` is ``{node: tag}``.
-    :raises ConfigError: if the file cannot be read, ``account`` is unknown, or
-        ``DBPort`` is not a number.
+    :raises ConfigError: if the file cannot be read, or ``DBPort`` is not a number.
     """
-    if account not in ACCOUNTS:
-        raise ConfigError("unknown account %r (one of %s)" % (account, ", ".join(ACCOUNTS)))
     try:
         with open(path) as f:
             scalars, islands = parse(f.read())
     except OSError as e:
         raise ConfigError("cannot read %s: %s" % (path, e))
-    user_key, pass_key = ACCOUNTS[account]
     values = {}
-    for key in ("DBIP", "DBPORT", "DBDATABASE", user_key, pass_key):
-        name, default = DB_KEYS[key]
+    for key, (name, default) in DB_KEYS.items():
         if key in scalars:
             values[key] = _db_value(scalars[key])
         else:
@@ -161,7 +148,8 @@ def load(path, account="commands"):
         port = int(values["DBPORT"])
     except ValueError:
         raise ConfigError("%s: DBPort=%r is not a number" % (path, values["DBPORT"]))
-    db = DbConf(values["DBIP"], port, values["DBDATABASE"], values[user_key], values[pass_key])
+    db = DbConf(values["DBIP"], port, values["DBDATABASE"], values["DBCOMMANDSUSER"],
+                values["DBCOMMANDSPASSW"])
     return db, node_tags(islands)
 
 
