@@ -22,3 +22,10 @@ One run reads with a *selection* from a *source*, shapes the rows with a
 :mod:`~ear_db_export.cli` is the command line and runs these steps;
 :mod:`~ear_db_export.config` reads ear.conf.
 """
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    #: The installed version of this package (``"unknown"`` when run from a source tree not installed).
+    __version__ = version("ear-db-export")
+except PackageNotFoundError:
+    __version__ = "unknown"

@@ -80,12 +80,12 @@ class Profile:
         :raises ConfigError: on such a name clash.
         """
         for t in [t for t in self.tables if t in OPTIONAL_TABLES and self.tables[t] not in live]:
-            log.info("no %s table in the DB (optional)", self.tables[t])
+            log.info("no %s table in the source (optional)", self.tables[t])
             del self.tables[t], self.columns[t]
         for t, cols in self.columns.items():
             have = live.get(self.tables[t], {})
             for c in [c for c, p in cols.items() if p not in have and is_optional(t, c)]:
-                log.warning("%s.%s (%s) not in DB: exported as NULL", self.tables[t], cols[c], c)
+                log.warning("%s.%s (%s) not in the source: exported as NULL", self.tables[t], cols[c], c)
                 del cols[c]
             clash = sorted((set(have) - set(cols.values())) & set(TABLES[t]))
             if clash:

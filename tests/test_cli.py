@@ -2,14 +2,18 @@
 import json
 import os
 import subprocess
+import sys
 
 import pyarrow.parquet as pq
+import pymysql
 import pytest
 
 from ear_db_export import cli
 from ear_db_export.clean import pseudonym
+from ear_db_export.config import DbConf, DbError
 from ear_db_export.output import LOCK_FILE, MANIFEST, SUMS, Output, read_checkpoint
 from ear_db_export.read.eacct import HEADER
+from ear_db_export.read.sql import mariadb
 from ear_db_export.selection import Window, epoch
 
 import fakedata
@@ -158,6 +162,60 @@ def test_errors_exit_2(tmp_path, db):
     with Output(str(out), "job_nodes", "{layout}.{ext}", "parquet", Window()):
         assert main("export", "job_nodes", "--out", out, *db) == 2                 # locked
     assert (out / LOCK_FILE).exists()
+
+
+def test_user_filters_on_a_pseudonymised_bundle(tmp_path, db):
+    """Names need the bundle's salt (then they match as the database does); pseudonyms need none."""
+    bundle, want = tmp_path / "bundle", tmp_path / "want"
+    assert main("export", "raw", "--out", bundle, *db) == 0
+    assert main("export", "power_signatures", "--users", "bob", "--out", want, *db) == 0
+    rows = pq.read_table(want / "power_signatures.parquet")
+    assert rows.num_rows == 1
+    by_name, by_pseudonym = tmp_path / "n", tmp_path / "p"
+    assert main("export", "power_signatures", "--users", "bob", "--bundle", bundle, "--out", by_name,
+                "--salt-file", db[3]) == 0
+    assert main("export", "power_signatures", "--users", pseudonym(b"s3cret", "bob"),
+                "--bundle", bundle, "--out", by_pseudonym) == 0
+    assert pq.read_table(by_name / "power_signatures.parquet").equals(rows)
+    assert pq.read_table(by_pseudonym / "power_signatures.parquet").equals(rows)
+    assert manifest(by_name)["filters"]["users"] == pseudonym(b"s3cret", "bob")
+    assert main("export", "power_signatures", "--users", "bob", "--bundle", bundle,
+                "--out", tmp_path / "x") == 2                                    # a name, no salt
+    other = tmp_path / "other"
+    other.write_bytes(b"other")
+    assert main("export", "power_signatures", "--users", "bob", "--bundle", bundle,
+                "--out", tmp_path / "x", "--salt-file", other) == 2               # not the bundle's salt
+
+
+def test_database_errors_are_one_line(tmp_path, db, monkeypatch, caplog):
+    """A refused connection is one error line, exit 1; the driver's error is wrapped in DbError."""
+    def refuse(*a, **kw):
+        raise pymysql.err.OperationalError(1045, "Access denied for user 'u'@'h'")
+    monkeypatch.setattr(pymysql, "connect", refuse)
+    with pytest.raises(DbError, match="cannot connect to h:3306/EAR as u: Access denied"):
+        mariadb.connect(DbConf("h", 3306, "EAR", "u", "pw"))
+    monkeypatch.setattr(cli.ENGINE, "connect", lambda dbconf: mariadb.connect(dbconf))
+    assert main("check", "--conf", db[1]) == 1
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and errors[0].exc_info is None and "Access denied" in errors[0].message
+
+
+def test_the_command_uses_the_system_allocator():
+    """Importing the command line before pyarrow makes Arrow use the system allocator, unless one is chosen."""
+    code = "import ear_db_export.cli, pyarrow as pa; print(pa.default_memory_pool().backend_name)"
+    env = {k: v for k, v in os.environ.items() if k != "ARROW_DEFAULT_MEMORY_POOL"}
+
+    def pool(**extra):
+        return subprocess.run([sys.executable, "-c", code], env=dict(env, **extra),
+                              capture_output=True, text=True, check=True).stdout.strip()
+    assert pool() == "system" and pool(ARROW_DEFAULT_MEMORY_POOL="mimalloc") == "mimalloc"
+
+
+def test_version(capsys):
+    """--version prints the program and its version."""
+    with pytest.raises(SystemExit) as e:
+        main("--version")
+    assert e.value.code == 0 and capsys.readouterr().out.startswith("ear-db-export ")
 
 
 def test_check(db, capsys):

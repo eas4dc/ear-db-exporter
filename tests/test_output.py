@@ -109,6 +109,19 @@ def test_another_layout_or_salt_is_refused(tmp_path):
             pass
 
 
+def test_coverage_joins_windows_and_other_filters_are_refused(tmp_path):
+    """coverage lists the windows the runs held, joined where they touch; other filters need another bundle."""
+    users = {"window": {}, "users": "abc"}
+    run(tmp_path, HIVE, rows(0), window=Window(D0, D0 + DAY), filters=users)
+    run(tmp_path, HIVE, rows(1), window=Window(D0 + DAY, D0 + 2 * DAY), filters=users)
+    m = run(tmp_path, HIVE, rows(5), window=Window(D0 + 5 * DAY, D0 + 6 * DAY), filters=users)
+    assert m["coverage"] == [{"from": "2026-07-04T00:00:00+00:00", "to": "2026-07-06T00:00:00+00:00"},
+                             {"from": "2026-07-09T00:00:00+00:00", "to": "2026-07-10T00:00:00+00:00"}]
+    assert m["filters"] == users
+    with pytest.raises(ConfigError, match="other filters"):
+        run(tmp_path, HIVE, rows(0), window=Window(D0, D0 + DAY), filters={"users": "def"})
+
+
 def test_lock_refuses_a_second_run(tmp_path):
     """Two runs never write the same bundle at once."""
     with Output(str(tmp_path), "nm", "{layout}.{ext}", "parquet", Window()):

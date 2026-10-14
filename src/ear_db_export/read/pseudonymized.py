@@ -7,6 +7,11 @@ replaces the names in the rows it yields.
 from ..clean import USER_COLUMNS, USER_FIELDS, pseudonym, pseudonymize
 
 
+def fingerprint(key):
+    """Identify a salt without revealing it: the pseudonym of a fixed text (a bundle's ``salt_fingerprint``)."""
+    return pseudonym(key, "ear-db-export")
+
+
 class Pseudonymized:
     """Any source, with user fields replaced by ``HMAC-SHA256(key, value)`` pseudonyms in every row it yields.
 
@@ -26,8 +31,8 @@ class Pseudonymized:
     def __init__(self, source, key):
         """Wrap ``source``; its user fields will be pseudonymised with ``key``."""
         self.source, self.key = source, key
-        #: Identifies the key without revealing it: the pseudonym of a fixed text.
-        self.salt_fingerprint = pseudonym(key, "ear-db-export")
+        #: Identifies the key without revealing it (:func:`fingerprint`).
+        self.salt_fingerprint = fingerprint(key)
 
     def __getattr__(self, name):
         """Return any other member from the wrapped source."""

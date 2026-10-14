@@ -80,7 +80,9 @@ is "user a or b, and an application starting with lmp").
 | `--batch-steps` | job granularity: only each job's batch step. Jobs launched with `srun` alone have no batch step and are left out | same |
 | `--limit N` | the newest N job steps, by end time (eacct's `-n` counts jobs). Applied in the query, before `--nodes`: with `--nodes` you may get fewer | same |
 
-On a pseudonymised bundle, give user filters as pseudonyms.
+On a pseudonymised bundle, give user filters as names with the bundle's
+`--salt-file`, or as pseudonyms; a name without the salt is refused, since it
+would match nothing.
 
 ### Flags of each layout
 
@@ -129,6 +131,11 @@ Flags go after the layout. Exit codes: `0` ok, `1` runtime error (DB, I/O),
 with a summary of the files written. Flags can also come from a file, one per
 line: `ear-db-export export node_metrics @/etc/ear-db-export/daily.args`
 (lines like `--out=/data/ear`).
+
+A run holds one page of a time-series table (1 M rows) or one chunk of job
+steps in memory at a time: a month of `node_metrics` peaks at about 0.5 GB.
+Arrow uses the system's allocator; `ARROW_DEFAULT_MEMORY_POOL=mimalloc` (or
+`jemalloc`) chooses another, at the cost of a larger RSS.
 
 ### `raw`: the tables as stored
 
@@ -190,8 +197,10 @@ metrics becomes one file per day. pyarrow, DuckDB
 Spark and Polars read such a directory as one table with a `date` column.
 
 A run into an existing bundle adds its files to it (files with the same path
-are replaced), as long as it is the same layout and the same salt. Two runs on
-the same `--out` at once are refused.
+are replaced), as long as it is the same layout, the same salt and the same
+filters (only the window, and `raw`'s TABLEs, may change). The manifest's
+`filters` are the last run's; its `coverage` lists the time windows the bundle
+holds, joined where they touch. Two runs on the same `--out` at once are refused.
 
 ## Resuming from cron: `--resume` and the checkpoint
 

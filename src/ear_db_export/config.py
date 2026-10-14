@@ -37,6 +37,13 @@ class ConfigError(Exception):
     """
 
 
+class DbError(Exception):
+    """The database cannot be reached or refuses the account (wrong host, password or grants).
+
+    The CLI turns it into a one-line error and exit code ``1``.
+    """
+
+
 @dataclass(frozen=True)
 class DbConf:
     """Connection settings for one EAR database.

@@ -17,6 +17,8 @@ import pyarrow as pa
 import pymysql
 import pymysql.cursors
 
+from ...config import DbError
+
 log = logging.getLogger(__name__)
 
 # A query on a connection whose streamed result is not read to the end makes
@@ -62,13 +64,16 @@ def connect(db):
     :param db: a :class:`~ear_db_export.config.DbConf`, normally with the
         ``DBCommandsUser`` credentials.
     :returns: an open ``pymysql`` connection with an unbuffered cursor class.
-    :raises pymysql.err.OperationalError: if the server cannot be reached or
-        rejects the credentials.
+    :raises DbError: if the server cannot be reached or rejects the credentials.
     """
     log.info("connecting to %s:%d/%s as %s", db.host, db.port, db.database, db.user)
-    conn = pymysql.connect(host=db.host, port=db.port, user=db.user, password=db.password,
-                           database=db.database, connect_timeout=30, read_timeout=3600,
-                           charset="utf8mb4", cursorclass=pymysql.cursors.SSCursor)
+    try:
+        conn = pymysql.connect(host=db.host, port=db.port, user=db.user, password=db.password,
+                               database=db.database, connect_timeout=30, read_timeout=3600,
+                               charset="utf8mb4", cursorclass=pymysql.cursors.SSCursor)
+    except pymysql.err.OperationalError as e:  # (code, server message)
+        raise DbError("cannot connect to %s:%d/%s as %s: %s"
+                      % (db.host, db.port, db.database, db.user, e.args[-1])) from e
     with conn.cursor() as cur:
         cur.execute("SET time_zone = '+00:00'")
         cur.execute("SET SESSION net_write_timeout = 600")

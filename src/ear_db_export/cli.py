@@ -27,22 +27,30 @@ Flags can be read from a file, one per line (``--out=/data/ear``), with ``@``:
 Exit codes: ``0`` success, ``1`` runtime error (database, I/O), ``2``
 configuration or schema error (:class:`~ear_db_export.config.ConfigError`).
 """
-import argparse
-import logging
-import sys
-import time
+import os
 
-from . import config
-from .clean import pseudonym
-from .config import ConfigError, DbConf
-from .layouts import LAYOUTS
-from .output import Output, read_checkpoint, template_for
-from .read.bundle import BundleSource
-from .read.eacct import EacctSource
-from .read.pseudonymized import Pseudonymized
-from .read.sql import SqlSource, mariadb
-from .read.sql.profile import available_profiles
-from .selection import split, window_from_args
+# Arrow's default allocator (mimalloc) keeps freed memory: a run's RSS grew to 2-4
+# times the data it held. Arrow reads this once, when pyarrow is imported, so it
+# is set before any import that loads pyarrow; a value already set is kept.
+os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
+
+import argparse  # noqa: E402
+import logging  # noqa: E402
+import re  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
+
+from . import __version__, config  # noqa: E402
+from .clean import pseudonym  # noqa: E402
+from .config import ConfigError, DbConf, DbError  # noqa: E402
+from .layouts import LAYOUTS  # noqa: E402
+from .output import Output, read_checkpoint, template_for  # noqa: E402
+from .read.bundle import BundleSource  # noqa: E402
+from .read.eacct import EacctSource  # noqa: E402
+from .read.pseudonymized import Pseudonymized, fingerprint  # noqa: E402
+from .read.sql import SqlSource, mariadb  # noqa: E402
+from .read.sql.profile import available_profiles  # noqa: E402
+from .selection import split, window_from_args  # noqa: E402
 
 log = logging.getLogger("ear_db_export")
 #: The ``--db-*`` flags (argparse names). Either all are given or none.
@@ -50,6 +58,8 @@ DB_FLAGS = ("db_host", "db_port", "db_name", "db_user", "db_password_file")
 #: The flags recorded in a bundle's manifest, as given (user names pseudonymised).
 FILTER_FLAGS = ("tables", "jobs", "users", "accounts", "groups", "apps", "etags", "policies",
                 "nodes", "tags", "batch_steps", "limit")
+#: The filter flags whose values are user fields, pseudonyms in a pseudonymised source.
+USER_FLAGS = ("users", "accounts", "groups")
 DESCRIPTION = "Read-only export of EAR data: its tables as stored, or layouts for analysis."
 #: The database engine module (tests replace it).
 ENGINE = mariadb
@@ -67,6 +77,7 @@ def parser(prog="ear-db-export"):
     ``layout="node_metrics"``, ``resume=True``, …
     """
     p = argparse.ArgumentParser(prog=prog, description=DESCRIPTION, fromfile_prefix_chars="@")
+    p.add_argument("--version", action="version", version="%(prog)s " + __version__)
     sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
     check = sub.add_parser("check", help="show the account's grants and compare the schema "
                                          "profile with the database")
@@ -194,14 +205,54 @@ def pseudonym_key(args, salt_fingerprint=None):
         return None
     if not args.salt_file:
         raise ConfigError("give --salt-file (or --no-pseudonymize to write user names in clear)")
+    return read_salt(args.salt_file)
+
+
+def read_salt(path):
+    """Read the pseudonymisation key from a salt file, as bytes.
+
+    :raises ConfigError: if the file is unreadable or empty.
+    """
     try:
-        with open(args.salt_file, "rb") as f:
+        with open(path, "rb") as f:
             key = f.read().strip()
     except OSError as e:
         raise ConfigError("cannot read --salt-file: %s" % e)
     if not key:
-        raise ConfigError("--salt-file %s is empty" % args.salt_file)
+        raise ConfigError("--salt-file %s is empty" % path)
     return key
+
+
+def filters_as_pseudonyms(args, salt_fingerprint):
+    """On a source that holds pseudonyms (a pseudonymised bundle), make ``--users/--accounts/--groups`` pseudonyms too.
+
+    With ``--salt-file`` the names given are pseudonymised with it, which must be
+    the salt the source was made with. Without it, each value must already be a
+    pseudonym (16 hex digits): a name would silently match nothing.
+
+    :param args: parsed flags; their user flags are replaced in place.
+    :param salt_fingerprint: the source's, ``None`` when it holds names in clear
+        (then nothing changes).
+    :raises ConfigError: on a salt that is not the source's, or a name without ``--salt-file``.
+
+    Example: on a bundle made with salt S, ``--users alice --salt-file S`` filters
+    by ``pseudonym(S, "alice")``; ``--users alice`` alone is refused.
+    """
+    given = [name for name in USER_FLAGS if getattr(args, name, None)]
+    if salt_fingerprint is None or not given:
+        return
+    if args.salt_file:
+        key = read_salt(args.salt_file)
+        if fingerprint(key) != salt_fingerprint:
+            raise ConfigError("--salt-file is not the salt the source was pseudonymised with")
+        for name in given:
+            setattr(args, name, ",".join(pseudonym(key, v) for v in split(getattr(args, name))))
+        return
+    names = [v for name in given for v in split(getattr(args, name))
+             if not re.fullmatch("[0-9a-f]{16}", v)]
+    if names:
+        raise ConfigError("the source holds pseudonyms, so %s would match nothing: give --salt-file "
+                          "to filter by name, or the pseudonyms" % ", ".join(names))
 
 
 def describe_filters(args, key, window):
@@ -238,6 +289,7 @@ def run(args):
     template = template_for(layout.NAME, args.path, args.hive)
     source = open_source(args)
     try:
+        filters_as_pseudonyms(args, source.salt_fingerprint)
         key = pseudonym_key(args, source.salt_fingerprint)
         if key is not None:
             source = Pseudonymized(source, key)
@@ -245,10 +297,9 @@ def run(args):
         if window.empty:  # --resume: the bundle is up to date
             return 0
         with Output(args.out, layout.NAME, template, args.as_, window, source.salt_fingerprint,
-                    args.dry_run) as out:
+                    args.dry_run, filters=describe_filters(args, key, window)) as out:
             layout.run(source, args, out)
-            out.finish({"source": source.info(), "filters": describe_filters(args, key, window),
-                        "node_tags": source.tags})
+            out.finish({"source": source.info(), "node_tags": source.tags})
         return 0
     finally:
         source.close()
@@ -275,7 +326,8 @@ def main(argv=None, prog="ear-db-export"):
 
     Logs go to stdout with UTC timestamps. A
     :class:`~ear_db_export.config.ConfigError` is logged as one line (exit
-    ``2``); any other exception is logged with its traceback (exit ``1``).
+    ``2``), a :class:`~ear_db_export.config.DbError` too (exit ``1``); any other
+    exception is logged with its traceback (exit ``1``).
 
     :param argv: arguments without the program name; ``None`` uses ``sys.argv[1:]``.
     :param prog: program name for usage and help, when mounted as a subcommand
@@ -293,8 +345,11 @@ def main(argv=None, prog="ear-db-export"):
     except ConfigError as e:
         log.error("%s", e)
         code = 2
+    except DbError as e:
+        log.error("%s", e)
+        code = 1
     except Exception:
-        log.exception("export failed")
+        log.exception("%s failed", args.command)
         code = 1
     log.info("finished in %.0f s, exit code %d", time.time() - t0, code)
     return code

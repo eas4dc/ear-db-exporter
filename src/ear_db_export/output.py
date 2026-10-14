@@ -12,8 +12,9 @@ A *bundle* is the output directory (``--out``) of one layout. Every run into it:
 
 A failed run removes its ``.tmp`` files and leaves the bundle as it was. A run
 holds a lock on the directory, so two runs never write the same bundle. A run
-into an existing bundle must be of the same layout and use the same salt; the
-manifest keeps the files of earlier runs.
+into an existing bundle must be of the same layout, use the same salt and the
+same filters (the window aside); the manifest keeps the files of earlier runs,
+and its ``coverage`` lists the time windows they hold.
 
 Where files go: ``--path TEMPLATE``, a path inside ``--out`` with these fields:
 
@@ -48,15 +49,16 @@ import json
 import logging
 import os
 import string
-from importlib.metadata import PackageNotFoundError, version
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
+from . import __version__
 from .clean import TS, to_ts
 from .config import ConfigError
+from .selection import iso
 
 log = logging.getLogger(__name__)
 
@@ -144,8 +146,11 @@ class Output:
     :param fingerprint: salt fingerprint of the run's pseudonyms, or ``None`` in clear.
     :param dry_run: write nothing and take no lock; log the paths instead.
     :param tool: the program named in the manifest (``slurm-db-export`` shares this class).
+    :param filters: the run's filters for the manifest (``{"window": ..., flag: value}``),
+        or ``None`` to record none; a bundle takes only runs with the same filters
+        (the window and raw's TABLEs aside).
     :raises ConfigError: if another run holds the lock, ``--out`` holds a bundle of
-        another layout or salt, or the template needs a window bound the run lacks.
+        another layout, salt or filters, or the template needs a window bound the run lacks.
 
     Example::
 
@@ -157,10 +162,12 @@ class Output:
     """
 
     def __init__(self, out, layout, template, ext, window, fingerprint=None, dry_run=False,
-                 tool="ear-db-export"):
+                 tool="ear-db-export", filters=None):
         """Keep the run's settings and check that the template's {from}/{to} have a window bound."""
         self.out, self.layout, self.template, self.ext, self.tool = out, layout, template, ext, tool
         self.window, self.fingerprint, self.dry_run = window, fingerprint, dry_run
+        # as the manifest will hold them, so a run compares equal to the one that wrote it
+        self.filters = None if filters is None else json.loads(json.dumps(filters, default=str))
         fields = template_fields(template)
         #: The per-row fields of the template, in :data:`ROW_FIELDS` order.
         self.row_fields = [f for f in ROW_FIELDS if f in fields]
@@ -189,6 +196,11 @@ class Output:
             self.__exit__(None, None, None)
             raise ConfigError("%s holds a bundle pseudonymised %s: use another --out" % (
                 self.out, "in clear" if old.get("salt_fingerprint") is None else "with another salt"))
+        had = _shared(old.get("filters")) if old is not None else None
+        if had is not None and self.filters is not None and had != _shared(self.filters):
+            self.__exit__(None, None, None)
+            raise ConfigError("%s holds a bundle made with other filters (%s): use another --out"
+                              % (self.out, json.dumps(had) if had else "none"))
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -253,10 +265,13 @@ class Output:
         _write_text(os.path.join(self.out, SUMS),
                     "".join("%s  %s\n" % (h, rel) for rel, h in sorted(sums.items())))
         now = _now()
-        manifest = dict(manifest, format=FORMAT, tool=self.tool + " " + _version(),
+        if self.filters is not None:
+            manifest = dict(manifest, filters=self.filters)
+        manifest = dict(manifest, format=FORMAT, tool=self.tool + " " + __version__,
                         layout=self.layout, created=old.get("created", now), finished=now,
                         salt_fingerprint=self.fingerprint, checkpoint=checkpoint,
-                        texts=sorted(set(old.get("texts", [])) | set(self._texts)), outputs=outputs)
+                        texts=sorted(set(old.get("texts", [])) | set(self._texts)),
+                        coverage=_coverage(old.get("coverage", []), self.window), outputs=outputs)
         _write_text(os.path.join(self.out, MANIFEST), json.dumps(manifest, indent=2, default=str) + "\n")
         rows = sum(f.rows for f in self._files.values())
         log.info("summary: %d files, %d rows, %.1f MB", len(self._files), rows,
@@ -418,9 +433,34 @@ def _now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def _version():
-    """Return the installed version of this package, or ``"unknown"``."""
-    try:
-        return version("ear-db-export")
-    except PackageNotFoundError:
-        return "unknown"
+def _shared(filters):
+    """Return the filters every run into a bundle must share: all but the window and raw's TABLEs (they pick files, not rows)."""
+    return {k: v for k, v in (filters or {}).items() if k not in ("window", "tables")}
+
+
+def _coverage(old, window):
+    """Merge this run's window into the manifest's ``coverage``: the windows the bundle holds, joined where they touch.
+
+    :param old: the previous manifest's ``coverage``, ``[{"from", "to"}, ...]`` (ISO 8601).
+    :param window: the run's :class:`~ear_db_export.selection.Window`; one
+        without both bounds (a whole dump) adds nothing.
+
+    Example: coverage 07-01..07-04 and a run 07-04..07-06 give 07-01..07-06;
+    a run 08-01..08-02 is added as a second span.
+    """
+    # ponytail: unbounded windows (whole dumps) are left out; record them if a reader needs it
+    spans = [(_seconds(c["from"]), _seconds(c["to"])) for c in old]
+    if window.start is not None and window.end is not None:
+        spans.append((window.start, window.end))
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [{"from": iso(s), "to": iso(e)} for s, e in merged]
+
+
+def _seconds(text):
+    """Return the Unix seconds of an ISO 8601 time with its offset (``2026-07-04T00:00:00+00:00``)."""
+    return int(dt.datetime.fromisoformat(text).timestamp())

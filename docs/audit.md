@@ -87,7 +87,8 @@ a separate step you control.
 
 A bundle's `manifest.json` describes it: the layout, the tool version, the database name,
 server version and EAR schema profile, the filters of the run (with users,
-accounts and groups pseudonymised), the node tags of ear.conf, the files with
+accounts and groups pseudonymised), the time windows the bundle holds
+(`coverage`), the node tags of ear.conf, the files with
 their row counts and checksums, and a fingerprint of the salt (an HMAC of a
 fixed text, which shows whether two bundles share a salt but does not reveal
 it).
