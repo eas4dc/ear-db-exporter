@@ -2,12 +2,12 @@
 
 ## Unreleased
 
-- Arrow uses the system allocator (`ARROW_DEFAULT_MEMORY_POOL` still chooses):
-  with mimalloc a month's run peaked at 2-4 times the memory it used.
+- Arrow uses the system allocator, in both commands (`ARROW_DEFAULT_MEMORY_POOL`
+  still chooses): with mimalloc a month's run peaked at 2-4 times the memory it used.
 - On a pseudonymised bundle, `--users/--accounts/--groups` take names with the
   bundle's `--salt-file`; a name without it is refused (it matched nothing).
 - A database that cannot be reached or refuses the account is one error line
-  (`DbError`, exit 1) instead of a traceback.
+  (`DbError`, exit 1) instead of a traceback, in both commands.
 - A bundle takes only runs with the same filters (the window and `raw`'s TABLEs
   aside); its manifest lists the windows it holds in `coverage`.
 - `--version`; `ear_db_export.__version__`.

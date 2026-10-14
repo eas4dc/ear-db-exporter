@@ -19,22 +19,28 @@ Flags can be read from a file, one per line, with ``@``:
 Exit codes: ``0`` success, ``1`` runtime error (database, I/O), ``2``
 configuration or schema error (:class:`~ear_db_export.config.ConfigError`).
 """
-import argparse
-import datetime as dt
-import logging
 import os
-import sys
-import time
 
-from ear_db_export.clean import pseudonym
-from ear_db_export.config import ConfigError, DbConf
-from ear_db_export.output import RUN_FIELDS, ROW_FIELDS, Output, template_fields
-from ear_db_export.read.sql import mariadb
-from ear_db_export.selection import Window, when, window_from_args
+# Arrow's default allocator (mimalloc) keeps freed memory, so a run's RSS grows to
+# several times the data it holds. Arrow reads this once, when pyarrow is imported,
+# so it is set before any import that loads pyarrow; a value already set is kept.
+os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
-from .layouts import jobs, raw
-from .profile import available_profiles
-from .read import SlurmSource
+import argparse  # noqa: E402
+import datetime as dt  # noqa: E402
+import logging  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
+
+from ear_db_export.clean import pseudonym  # noqa: E402
+from ear_db_export.config import ConfigError, DbConf, DbError  # noqa: E402
+from ear_db_export.output import RUN_FIELDS, ROW_FIELDS, Output, template_fields  # noqa: E402
+from ear_db_export.read.sql import mariadb  # noqa: E402
+from ear_db_export.selection import Window, when, window_from_args  # noqa: E402
+
+from .layouts import jobs, raw  # noqa: E402
+from .profile import available_profiles  # noqa: E402
+from .read import SlurmSource  # noqa: E402
 
 log = logging.getLogger("slurm_db_export")
 TOOL = "slurm-db-export"
@@ -240,7 +246,8 @@ def main(argv=None, prog=TOOL):
     """Entry point: parse the flags, set up logging, run, and map errors to exit codes.
 
     Logs go to stdout with UTC timestamps. A :class:`~ear_db_export.config.ConfigError`
-    is logged as one line (exit ``2``); any other exception with its traceback (exit ``1``).
+    is logged as one line (exit ``2``), a :class:`~ear_db_export.config.DbError` too
+    (exit ``1``); any other exception with its traceback (exit ``1``).
 
     :param argv: arguments without the program name; ``None`` uses ``sys.argv[1:]``.
     :returns: the exit code.
@@ -255,8 +262,11 @@ def main(argv=None, prog=TOOL):
     except ConfigError as e:
         log.error("%s", e)
         code = 2
+    except DbError as e:
+        log.error("%s", e)
+        code = 1
     except Exception:
-        log.exception("export failed")
+        log.exception("%s failed", args.command)
         code = 1
     log.info("finished in %.0f s, exit code %d", time.time() - t0, code)
     return code

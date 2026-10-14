@@ -3,11 +3,13 @@ import json
 import logging
 import os
 import subprocess
+import sys
 
 import pyarrow.parquet as pq
 import pytest
 
 from ear_db_export.clean import pseudonym
+from ear_db_export.config import DbError
 from slurm_db_export import cli
 
 from slurmfake import SlurmFakeEngine
@@ -139,6 +141,27 @@ def test_jobs_from_a_slurm17_bundle(tmp_path, db, monkeypatch):
 def test_jobs_refuses_a_non_bundle(tmp_path):
     """jobs needs a finished raw bundle of slurm-db-export."""
     assert main("export", "jobs", "--bundle", tmp_path, "--out", tmp_path / "o") == 2
+
+
+def test_database_errors_are_one_line(db, monkeypatch, caplog):
+    """A refused connection is one error line, exit 1."""
+    def refuse(dbconf):
+        raise DbError("cannot connect to fake:3306/slurm_acct_db as ro: Access denied")
+    monkeypatch.setattr(cli.ENGINE, "connect", refuse)
+    assert main("check", *db[:6]) == 1
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and errors[0].exc_info is None and "Access denied" in errors[0].message
+
+
+def test_the_command_uses_the_system_allocator():
+    """Importing the command line before pyarrow makes Arrow use the system allocator, unless one is chosen."""
+    code = "import slurm_db_export.cli, pyarrow as pa; print(pa.default_memory_pool().backend_name)"
+    env = {k: v for k, v in os.environ.items() if k != "ARROW_DEFAULT_MEMORY_POOL"}
+
+    def pool(**extra):
+        return subprocess.run([sys.executable, "-c", code], env=dict(env, **extra),
+                              capture_output=True, text=True, check=True).stdout.strip()
+    assert pool() == "system" and pool(ARROW_DEFAULT_MEMORY_POOL="mimalloc") == "mimalloc"
 
 
 def test_check(db, capsys):
