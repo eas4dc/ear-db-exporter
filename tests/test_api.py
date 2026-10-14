@@ -30,7 +30,7 @@ API = {
     selection: ["Window", "window_from_args"],
     jobs: ["JobSelection", "JobChunk", "JobKeys", "parse_jobs", "gpu_ids"],
     timeseries: ["TimeSelection"],
-    layouts: ["LAYOUTS"],
+    layouts: ["LAYOUTS", "ORDER"],
     clean: ["typed", "pseudonym", "pseudonymize", "USER_FIELDS", "USER_COLUMNS"],
     output: ["Output", "template_for", "read_checkpoint", "read_manifest"],
     cli: ["main"],

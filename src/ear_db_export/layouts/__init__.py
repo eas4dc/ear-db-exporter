@@ -27,6 +27,7 @@ Layout                  Writes one row per                        Reads         
 ======================  ========================================  =====================================  ===============
 """
 from . import eacct, job_nodes, node_metrics, power_signatures, raw
+from .raw import ORDER  # noqa: F401  (stable API: the order a loader writes EAR's tables in)
 
 #: Every layout, by name, in the order ``export --help`` lists them.
 LAYOUTS = {m.NAME: m for m in (raw, node_metrics, job_nodes, power_signatures, eacct)}

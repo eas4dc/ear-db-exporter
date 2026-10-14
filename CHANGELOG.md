@@ -11,6 +11,8 @@
 - A bundle takes only runs with the same filters (the window and `raw`'s TABLEs
   aside); its manifest lists the windows it holds in `coverage`.
 - `--version`; `ear_db_export.__version__`.
+- `ear_db_export.layouts.ORDER` (EAR's tables, each after the tables it points to)
+  is stable API, for ear-db-synth's loader.
 
 ## 0.6.0
 

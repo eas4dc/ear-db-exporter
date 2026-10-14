@@ -38,7 +38,7 @@ too.
    * - :mod:`ear_db_export.selection.jobs`, :mod:`~ear_db_export.selection.timeseries`
      - ``JobSelection``, ``JobChunk``, ``JobKeys``, ``parse_jobs``, ``gpu_ids``, ``TimeSelection``
    * - :mod:`ear_db_export.layouts`
-     - ``LAYOUTS``
+     - ``LAYOUTS``, ``ORDER``
    * - :mod:`ear_db_export.clean`
      - ``typed``, ``pseudonym``, ``pseudonymize``, ``USER_FIELDS``, ``USER_COLUMNS``
    * - :mod:`ear_db_export.output`
