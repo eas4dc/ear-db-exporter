@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
 - Arrow uses the system allocator, in both commands (`ARROW_DEFAULT_MEMORY_POOL`
   still chooses): with mimalloc a month's run peaked at 2-4 times the memory it used.
