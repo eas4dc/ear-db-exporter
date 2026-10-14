@@ -1,22 +1,28 @@
-"""MariaDB/MySQL engine of the SQL source: connection, quoting, and SELECTs streamed into pyarrow.
+"""Everything that talks to MariaDB or MySQL: the connection, name quoting, and SELECTs read into pyarrow.
 
-This is the only module that knows the database engine: the driver,
-identifier quoting, ``EXPLAIN`` output, ``information_schema`` and type names,
-grants, and the auto-increment step. :class:`~ear_db_export.read.sql.SqlSource`
-and its queries use only these functions, with ``%s``
-placeholders, so another engine EAR supports (PostgreSQL) is another module
-with the same functions.
+This is the only module that knows which engine EAR's database runs on: it
+imports the driver, quotes names, and reads the engine's own ``EXPLAIN``
+output, ``information_schema``, type names, grants and auto-increment step.
+:class:`~ear_db_export.read.sql.SqlSource` and its queries use only these
+functions, with ``%s`` placeholders, so another engine EAR supports
+(PostgreSQL) is another module with the same functions.
 
 The connection uses an unbuffered cursor (``SSCursor``), so large results are
 read in batches (:func:`stream`) instead of being loaded into memory by the driver.
 """
 import logging
+import warnings
 
 import pyarrow as pa
 import pymysql
 import pymysql.cursors
 
 log = logging.getLogger(__name__)
+
+# A query on a connection whose streamed result is not read to the end makes
+# pymysql drop the unread rows, with only this warning: make it an error, so an
+# export never loses rows silently (SqlSource streams on a connection of its own).
+warnings.filterwarnings("error", message="Previous unbuffered result was left incomplete")
 
 #: Rows fetched from the server per round trip in :func:`fetch`.
 BATCH_ROWS = 100_000
@@ -123,8 +129,8 @@ def stream(conn, sql, params, schema):
     """Run a SELECT and yield its result as pyarrow record batches with a fixed schema.
 
     Rows are read :data:`BATCH_ROWS` at a time and converted batch by batch, so
-    neither the driver nor this function holds the whole result. Consume the
-    generator before running another query on the same connection.
+    neither the driver nor this function holds the whole result. The connection
+    can run no other query until the generator is consumed (doing so raises).
 
     :param conn: connection from :func:`connect`.
     :param sql: the SELECT, with ``%s`` placeholders.

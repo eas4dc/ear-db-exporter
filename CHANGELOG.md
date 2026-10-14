@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.5.0
+
+One command, `export LAYOUT`: a *layout* is what to write, and each has its own
+flags, so `--help` shows which filters it takes and which tables it reads. The
+code follows the same split: one module per layout, read top to bottom, and the
+filters owned by two selection classes, one per family of EAR's tables.
+Breaking: the command line, the files and the Python API changed. There is no
+compatibility with 0.4.0.
+
+### Commands
+
+| 0.4.0 | 0.5.0 |
+|---|---|
+| `export [--tables …]` | `export raw [TABLE …]` (default every table) |
+| `view node_metrics --format node_metrics=long --format-opt service=X` | `export node_metrics --service X` (long format only) |
+| `view job_nodes` | `export job_nodes` (window and nodes only) |
+| `view power_signatures` | `export power_signatures` |
+| `view eacct` | `export eacct` (streams by chunks of job steps) |
+| `view … --every day --incremental` | `export … --hive --resume --to DAY`, run by a cron script (user guide) |
+| `check` | `check` |
+
+### New
+
+- `--eacct FILE`: read `eacct -l -c` CSV files as a source (the job layouts).
+- `--path TEMPLATE`: where files go inside `--out`, with `{layout} {table} {ext}
+  {from} {to}` and, per row, `{date} {year} {month} {day}`; `--hive` is
+  `{layout}/date={date}/part-0.{ext}`. Every layout but `raw` can split by row time.
+- `--resume`: start at the bundle's checkpoint (`checkpoint.json`, referenced by
+  the manifest); `--from` is the start of the first run.
+- `@FILE`: read flags from a file, one per line.
+- `raw` with filters is a linked dump: the selected job steps and every row
+  they point to; time-series tables by their own time, or by the selected jobs.
+- Every export streams: one page of a time-series table, or one chunk of 5000
+  job steps, in memory at a time (a month of `node_metrics` fits).
+- Every export is a bundle (`manifest.json`, `SHA256SUMS`).
+
+### Removed
+
+- `view`, `--every`, `--incremental`, `--lag-days`, `--state`, `--update-state`,
+  `--overwrite`: the tool no longer schedules; a cron script passes `--resume
+  --to "$(date -u -d '2 days ago' +%F)"`.
+- The datasets `app_signatures` and `gpu_signatures` (their values are in
+  `eacct`), `node_metrics` in wide format, the `allocations` format,
+  `--format`/`--format-opt`, `--sample/--seed`, `--tables` groups, CSV bundles of
+  `raw`, prune-horizon warnings.
+- Modules `selection.py` (now a package), `extract`, `schedule`, `pipeline`,
+  `formats`, `canonical`, `write`, and `eacct` (its `COLUMNS` and `HEADER` are
+  now in `read.eacct`); the Python API is listed in `docs/api.rst`.
+
+### Changed
+
+- `--limit N` counts job steps (eacct's `-n` counts jobs).
+- `job_nodes` and `power_signatures` have every `Jobs` column, `def_gpu_f`
+  included; times are UTC timestamps.
+- Sources yield logical column names with the types as stored; `raw` renames
+  them back, so a linked dump is still the tables as stored.
+- The database source streams long reads (`Jobs`, `Loops`, tables without an
+  integer key) on a second read-only connection, so each chunk of job steps
+  is looked up while `Jobs` streams; a query that would make the driver drop
+  a stream's unread rows is an error.
+- Documentation: diagrams render (Mermaid, `sphinxcontrib-mermaid`); the
+  layout table and each layout's `--help` are generated from the code.
+
 ## 0.4.0
 
 A new command line around one idea: select rows with filters, follow EAR's

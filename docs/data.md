@@ -18,11 +18,11 @@ measurements after a while.
 
 | Term | Meaning |
 |---|---|
-| job, step | A Slurm job and one of its steps (`srun`, batch script, …). EAR records one row per **job step**. `step_id` values near 2³² (e.g. 4294967291, 4294967294) are Slurm's special steps (batch script, extern), depending on the Slurm version. |
+| job, step | A Slurm job and one of its steps (`srun`, batch script, …). EAR records one row per **job step**. `step_id` values near 2³² are Slurm's special steps (see the table at the end of this page). |
 | `local_id` | EAR's number for one application inside a step (since EAR 5.0; called `app_id` in EAR 7's database), when a step runs several. With `job_id` and `step_id` it identifies an application. Empty on EAR 4.3. |
 | node, `node_tag` | Node name, and the tag of its group of nodes in EAR's configuration (`ear.conf` `Island=` lines), e.g. `cpu` or `gpu`. |
 | power signature (`ps_*`) | What EARD measured for one job step on one node: average power, duration, frequency. Exists for **every** job step. |
-| application signature (`sig_*`) | What EARL measured for one application on one node: power plus performance counters (CPI, bandwidth, FLOPS…). Exists only when the application ran with EARL. |
+| application signature | What EARL measured for one application on one node: power plus performance counters (CPI, bandwidth, FLOPS…). Exists only when the application ran with EARL. In `eacct`'s signature columns. |
 | GPU signature | The GPU part of an application signature, one per GPU. |
 | policy, threshold | EAR's energy policy for the job (`monitoring`, `min_energy`, `min_time`, …) and its setting. |
 | energy tag (`e_tag`) | A named set of frequencies a user may request instead of a policy. |
@@ -31,60 +31,65 @@ measurements after a while.
 
 ## Files and times
 
-There are two kinds of files ({doc}`guide` has the commands):
+Every export writes a *bundle* into `--out` ({doc}`guide` has the commands):
+the data files, `SHA256SUMS`, `manifest.json` and, when the run had a time
+window, `checkpoint.json`. A layout is one file (`OUT/node_metrics.parquet`),
+or with `--hive` one file per UTC day of the rows' time:
 
-- **Datasets** (`view`), described on this page: one clean table per subject.
-  Each is one file (`OUT/node_metrics.parquet`), or with `--every` a directory
-  of files, one per day or month:
-
-  ```
-  OUT/node_metrics/date=YYYY-MM-DD/part-0.parquet       # one file per UTC day
-  OUT/job_nodes/date=YYYY-MM-DD/part-0.parquet
-  OUT/power_signatures/month=YYYY-MM/part-0.parquet     # one file per calendar month
-  OUT/app_signatures/month=YYYY-MM/part-0.parquet
-  OUT/gpu_signatures/month=YYYY-MM/part-0.parquet
-  ```
-
-- **Bundles** (`export`): EAR's tables as stored ([below](#bundles-the-tables-as-stored)).
+```
+OUT/node_metrics/date=YYYY-MM-DD/part-0.parquet
+OUT/job_nodes/date=YYYY-MM-DD/part-0.parquet
+```
 
 pandas, Polars, DuckDB (`read_parquet('OUT/node_metrics/*/*.parquet',
-hive_partitioning=true)`) and Spark read a directory as one table with a
-`date` or `month` column. With `--as csv` the files are CSV instead. Times are UTC timestamps. Missing values are NULL;
-EAR stores "no value" as `0`, and the tool turns those zeros into NULL where
-a zero cannot be a real value. A job step belongs to the day or month in
-which it **ended**. Column names are the same whatever the EAR version.
+hive_partitioning=true)`) and Spark read such a directory as one table with a
+`date` column. A row without a time goes to `date=__HIVE_DEFAULT_PARTITION__`,
+which these readers read as a null date. With `--as csv` the files are CSV
+instead (not `node_metrics`). Times are UTC timestamps (`eacct` keeps eacct's
+own: epoch seconds and UTC date strings). Missing values are NULL; EAR stores "no value" as
+`0`, and the layouts turn those zeros into NULL where a zero cannot be a real
+value. A job step belongs to the window in which it **ended**. Column names are
+the same whatever the EAR version. Rows come roughly in time order, as EAR
+inserted them: sort them if you need an order.
 
 User names, accounts and groups are replaced by pseudonyms: 16 hex digits,
 the same for the same user in every file made with the same secret
 (`--salt-file`).
 
-## node_metrics: node measurements
+## node_metrics: node measurements, long format
 
-One row per node and interval, sorted by node and time. A row belongs to the
-day of its `end`. `view node_metrics`.
+One row per node, interval and metric that has a value. `export node_metrics`.
 
-| column | unit | meaning |
+| column | type | meaning |
 |---|---|---|
-| `node`, `node_tag` | | node name, and its tag |
-| `job_id`, `step_id` | | the job step EAR saw on the node in that interval; NULL when the node was idle. Informational: to attribute energy to jobs use `job_nodes` (below) |
-| `start`, `end` | UTC | interval start and end, about 60 s apart |
-| `dc_energy_j` | J | energy of the whole node (DC) in the interval |
-| `dram_energy_j` | J | memory (DRAM) energy |
-| `pck_energy_j` | J | CPU package energy |
-| `gpu_energy_j` | J | GPU energy; NULL on nodes without GPUs |
-| `avg_cpu_freq_khz` | kHz | average CPU frequency |
-| `temp_c` | °C | highest CPU socket temperature |
+| `timestamp` | UTC | interval end |
+| `duration_s` | s | interval length (about 60 s) |
+| `service` | | from `--service` (e.g. the cluster's name) |
+| `source` | | `ear` |
+| `metric_name` | | one of the metrics below |
+| `value` | float64 | the value, in the metric's unit |
+| `labels` | map | `node`; and `job_id`, `step_id` of the job EAR saw on the node in that interval (none when idle) |
 
-Average power in W is `dc_energy_j / (end - start)`. EAR replaces implausible
-readings by the tag's `max_power`, so a constant `max_power × duration`
-(e.g. 5000 W) is an EAR error value, not a measurement. DRAM energy is NULL
-on CPUs without DRAM sensors (some AMD); frequency and temperature are NULL
-when EAR could not read them.
+| `metric_name` | unit | meaning |
+|---|---|---|
+| `ear_node_dc_energy_joules` | J | energy of the whole node (DC) in the interval |
+| `ear_node_dram_energy_joules` | J | memory (DRAM) energy |
+| `ear_node_pck_energy_joules` | J | CPU package energy |
+| `ear_node_gpu_energy_joules` | J | GPU energy; absent on nodes without GPUs |
+| `ear_node_avg_cpu_freq_khz` | kHz | average CPU frequency |
+| `ear_node_temp_celsius` | °C | highest CPU socket temperature |
+
+Average power in W is `value / duration_s` for the energies. EAR replaces
+implausible readings by the tag's `max_power`, so a constant `max_power ×
+duration` (e.g. 5000 W) is an EAR error value, not a measurement. A metric EAR
+could not read (DRAM energy on some AMD CPUs, frequency or temperature when
+reading failed) has no row. `labels` keeps one job per node and interval: on a
+shared node, use `job_nodes` to find every step.
 
 ## job_nodes: who ran where, and when
 
-One row per job step and node it ran on, for steps that ended in the period.
-`view job_nodes`.
+One row per job step and node it ran on, for steps that ended in the window.
+`export job_nodes`.
 
 | column | unit | meaning |
 |---|---|---|
@@ -92,22 +97,24 @@ One row per job step and node it ran on, for steps that ended in the period.
 | `user_id`, `user_acc`, `user_group` | | user, Slurm account and Unix group, **pseudonymised** |
 | `app_name` | | job or application name, **in clear** |
 | `start_time`, `end_time` | UTC | step start and end |
-| `start_mpi_time`, `end_mpi_time` | UTC | when EARL started and stopped in the application; NULL without EARL |
+| `start_mpi_time`, `end_mpi_time` | UTC | when EARL started and stopped in the application; without EARL, `start_mpi_time` is NULL and `end_mpi_time` is 2038-01-19 03:14:07 (EAR's "not set") |
 | `policy`, `threshold` | | EAR energy policy and its setting |
 | `procs` | | number of processes |
 | `job_type` | | EAR's internal job type code (NULL from EAR 7) |
 | `def_f` | kHz | default CPU frequency requested |
 | `e_tag` | | energy tag requested, NULL if none |
+| `def_gpu_f` | | default GPU frequency requested, as EAR 7 stores it (NULL before EAR 7) |
 | `node`, `node_tag` | | node it ran on, and its tag |
 
-To attribute node energy to jobs, join on the node and overlapping time:
-`node_metrics.node = job_nodes.node AND node_metrics.end > job_nodes.start_time
-AND node_metrics.start < job_nodes.end_time`. A step can run for days before
-the day it ends, so join across several days of `node_metrics`.
+To find every step on node N at time t: `node = N AND start_time <= t AND t <
+end_time`. To attribute node metrics: `labels['node'] = node AND timestamp >
+start_time AND timestamp - duration_s < end_time`. A step is in the file of
+the day it **ended**, which may be days after it started: read the following
+days' files too.
 
 ## power_signatures: power of every job step on every node
 
-One row per job step and node. `view power_signatures`.
+One row per job step and node. `export power_signatures`.
 
 The `job_*` columns are those of `job_nodes` with a `job_` prefix
 (`job_job_id`, `job_user_id`, …), then `node`, `node_tag`, then:
@@ -117,123 +124,68 @@ The `job_*` columns are those of `job_nodes` with a `job_` prefix
 | `ps_dc_power` | W | average node power during the step |
 | `ps_dram_power` | W | average memory power |
 | `ps_pck_power` | W | average CPU package power |
+| `ps_edp` | J·s | energy-delay product, as EAR stores it (may be 0) |
 | `ps_max_dc_power`, `ps_min_dc_power` | W | highest and lowest node power during the step |
 | `ps_time` | s | duration of the step on the node |
-| `ps_edp` | J·s | energy-delay product, as EAR stores it (may be 0) |
 | `ps_avg_f` | kHz | average CPU frequency |
 | `ps_def_f` | kHz | default CPU frequency |
 
 Energy of the step on the node: `ps_dc_power × ps_time` (J). Rows whose
-power signature is missing are kept with NULL `ps_*` columns.
-
-## app_signatures: application performance on every node
-
-One row per job step and node where the application ran with EARL.
-`view app_signatures`. Columns: `job_*` and `node`, `node_tag` as above, then:
-
-| column | unit | meaning |
-|---|---|---|
-| `sig_dc_power`, `sig_dram_power`, `sig_pck_power` | W | average node, memory and CPU package power |
-| `sig_time` | s | application time on the node |
-| `sig_edp` | J·s | energy-delay product: time² × node power (NULL from EAR 7) |
-| `sig_cpi` | | cycles per instruction (higher: more stalls) |
-| `sig_tpi` | | memory transactions (cache lines) per instruction |
-| `sig_gbs` | GB/s | memory bandwidth |
-| `sig_io_mbs` | MB/s | I/O throughput |
-| `sig_gflops` | GFLOP/s | CPU floating-point rate |
-| `sig_perc_mpi` | % | share of time spent in MPI |
-| `sig_avg_f`, `sig_avg_imc_f`, `sig_def_f` | kHz | average CPU, average memory-controller and default CPU frequency |
-| `sig_cpu_util` | % | CPU utilisation (EAR ≥ 6; NULL before) |
-| `sig_instructions`, `sig_cycles` | count | instructions and cycles |
-| `sig_l1_misses`, `sig_l2_misses`, `sig_l3_misses` | count | cache misses |
-| `sig_flops_1` … `sig_flops_4` | count | single-precision floating-point instructions: scalar, 128-, 256-, 512-bit vectors |
-| `sig_flops_5` … `sig_flops_8` | count | double precision, same widths |
-
-The counts (instructions to FLOPS) are NULL when the site sets
-`DBReportSigDetail=0`.
-
-## gpu_signatures: GPUs of each application
-
-One row per GPU of each application signature. `view gpu_signatures`.
-
-| column | unit | meaning |
-|---|---|---|
-| `job_id`, `step_id`, `local_id`, `node` | | the application and node (no prefix here) |
-| `gpu_index` | | GPU number on the node (0, 1, …); kept even when a GPU in the middle has no row |
-| `gpu_power` | W | average GPU power |
-| `gpu_freq`, `gpu_mem_freq` | kHz | average GPU and GPU memory frequency |
-| `gpu_util`, `gpu_mem_util` | % | GPU and GPU memory utilisation |
-| `gpu_gflops` | GFLOP/s | GPU floating-point rate (EAR ≥ 6; NULL before) |
-
-## Other formats
-
-`--format DATASET=FORMAT` writes a dataset in another shape.
-
-**`long`** (`node_metrics`): one row per node, interval and metric, sorted by
-`metric_name, node, timestamp`. Missing values are left out.
-
-| column | meaning |
-|---|---|
-| `timestamp` | interval end |
-| `duration_s` | interval length (≈ 60 s) |
-| `service`, `source` | from `--format-opt service=…` (required) and `source=…` (default `ear`) |
-| `metric_name` | `ear_node_dc_energy_joules`, `ear_node_dram_energy_joules`, `ear_node_pck_energy_joules`, `ear_node_gpu_energy_joules`, `ear_node_avg_cpu_freq_khz`, `ear_node_temp_celsius` |
-| `value` | float64 |
-| `labels` | map: `node`, and `job_id`/`step_id` of the job EAR saw in that interval |
-
-**`allocations`** (`job_nodes`): `job_id, step_id, local_id, node, start, end,
-user_id, user_acc, user_group, app_name, policy, job_type, procs, node_tag`,
-where `start`/`end` are the step's `start_time`/`end_time`. To attribute
-`long` metrics: `metrics.labels['node'] = alloc.node AND metrics.timestamp >
-alloc.start AND metrics.timestamp - duration_s < alloc.end`.
+power signature is missing are kept with NULL `ps_*` columns. With
+`--batch-steps`, only each job's batch step: one row per job and node.
 
 ## eacct: eacct's own CSV layout
 
 One row per job step and node, with the 153 columns `eacct -l -c` writes (EAR
 6 and 7): `JOBID;STEPID;APPID;USERID;…;NODENAME`, the EARL signature
-(`AVG_CPUFREQ_KHZ` … `DPOPS_512`), `GPU0_*` … `GPU7_*` and the EARD power
-signature (`NODEMGR_*`). Tools that read eacct files (EAR's analytics) can read
-it: `view eacct --as csv` writes it with `;`, like eacct.
+(`AVG_CPUFREQ_KHZ` … `DPOPS_512`), four sockets' `TEMP*`, `CPU_POWER*` and
+`DRAM_POWER*`, `GPU0_*` … `GPU7_*` and the EARD power signature (`NODEMGR_*`). Tools that read eacct files (EAR's analytics, and
+this tool's `--eacct`) can read it: `export eacct --as csv` writes it with `;`,
+like eacct.
 
 Differences with eacct's own output: times and dates are UTC (eacct prints
 local time), numbers are in their shortest form (`310.523`, not `310.523000`),
 empty strings are empty (eacct prints a space), and user fields are
 pseudonymised. Columns EAR's database does not store (stalls, cache hits and
-rates, per-socket temperature and power, GPU temperature) are `0`, as eacct
+rates, per-socket temperature and power, GPU temperature,
+`EAR_LEARNING_PHASE`) are `0`, as eacct
 prints them when it reads the database; steps without an EARL signature have
 `EARL_ENABLED` 0 and zeros in the signature columns.
 
 (bundles-the-tables-as-stored)=
-## Bundles: the tables as stored
+## raw: the tables as stored
 
-`export` writes EAR's tables as they are in the database, for archiving,
-moving them to another site, or analyses the datasets above do not cover
+`export raw` writes EAR's tables as they are in the database, for archiving,
+moving them to another site, or analyses the layouts above do not cover
 (loops, events):
 
 ```
 OUT/<Table>.parquet      # e.g. Jobs.parquet: the selected rows, every column
-OUT/<Table>/date=YYYY-MM-DD/part-0.parquet          # with --every day (or month=YYYY-MM)
 OUT/schema.sql           # the CREATE TABLE statement of each table
 OUT/SHA256SUMS           # checksums: sha256sum -c SHA256SUMS
 OUT/manifest.json        # written last: source, profile, filters, rows and checksum per file
 ```
 
-Unlike the datasets, a bundle keeps EAR's own table and column names, which
+Unlike the layouts, `raw` keeps EAR's own table and column names, which
 change between EAR versions (EAR 7 renamed many; `manifest.json` says which
 schema profile applies), its epoch-second times and its `0` for "no value".
 Column types are exact (unsigned integers stay unsigned, `FLOAT` stays 32-bit:
-read through the datasets, a stored 0.1 is 0.1 again). User columns
+read through a layout, a stored 0.1 is 0.1 again). User columns
 (`user_id`, `user_name`, `user_acc`, `user_group`, `pod_user_id`) are
 pseudonymised as above. A bundle can be read back with `--bundle DIR`.
 
-The rows are the selected job steps and every row they point to: their
-applications, power and application signatures, GPU signatures (EAR stores a
-signature's GPUs as an id range, stepping by the server's auto-increment
-step, which the manifest records) and loops; periodic metrics and events of
-those jobs, or of the time range and nodes when no job filter is given. With
-`--every`, every row read for a period is in that period's partition.
-Tables are read one after the other while EAR keeps writing, so a bundle is
-not a snapshot of one instant: `manifest.json` has its start and end time.
+With filters, the rows are the selected job steps and every row they point
+to: their applications, power and application signatures, GPU signatures
+(EAR stores a signature's GPUs as an id range, stepping by the server's
+auto-increment step, which the manifest records) and loops. The time-series
+tables (periodic metrics, events, aggregations, global energy) have the rows
+of the window and nodes when no job filter is given. With job filters they are
+read from the first start to the last end of the selected steps plus one hour
+(a node reports its last interval after a step ends). Periodic metrics and
+events then keep the rows of those jobs (of every step of a job, or only of the
+steps `--jobs` names); aggregations and global energy have no job, so they keep
+every row of that time span. Tables are read one after the other while EAR keeps writing, so a
+bundle is not a snapshot of one instant.
 
 Special values worth knowing:
 

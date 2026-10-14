@@ -4,14 +4,16 @@ Architecture
 Data flow
 ---------
 
-Every run selects rows, reads them from a source following EAR's links, and
-writes either the tables as stored or datasets built from them:
+Every ``export`` reads with a *selection* from a *source*, shapes the rows with
+a *layout*, and writes them to a *bundle*:
 
-.. code-block:: text
+.. mermaid::
 
-   flags ─► Selection ─► source ─────────────► extract ─┬─► export: tables as stored ───────────► bundle: OUT/<Table>.parquet,
-            (filters)    database (read-only)  EAR's    │                                         schema.sql, SHA256SUMS, manifest.json
-                         or a bundle           links    └─► view: Records ─► dataset ─► format ─► OUT/<dataset>.parquet|csv
+   flowchart LR
+       F[flags] --> SEL["selection<br/>TimeSelection<br/>JobSelection"]
+       SEL --> SRC["source<br/>database, bundle<br/>or eacct files"]
+       SRC --> L["layout<br/>raw, eacct, …"]
+       L --> O["Output<br/>the bundle"]
 
 .. list-table::
    :header-rows: 1
@@ -22,104 +24,116 @@ writes either the tables as stored or datasets built from them:
      - Does
    * - Select
      - :mod:`ear_db_export.selection`
-     - turns the filter flags into a :class:`~ear_db_export.selection.Selection`,
-       and its filters into DNF tuples on *logical* column names
-   * - Source
-     - :mod:`ear_db_export.read` (:class:`~ear_db_export.read.sql.SqlSource`,
-       :class:`~ear_db_export.read.bundle.BundleSource`)
-     - reads one table at a time, as stored (physical names, exact types):
-       ``scan(table, where)`` and ``lookup(table, column, keys)``
-   * - Extract
-     - :mod:`ear_db_export.extract`
-     - from the selected job steps, reads every table they point to, in order
-       (:data:`~ear_db_export.extract.ORDER`); :class:`~ear_db_export.extract.Records`
-       gives the same rows with logical names to the datasets
-   * - Dataset
-     - :mod:`ear_db_export.canonical`
-     - one clean table per subject: joined, UTC timestamps, NULLs, units,
-       pseudonymised users
-   * - Format
-     - :mod:`ear_db_export.formats`
-     - the shape a consumer wants: ``wide``, ``long``, ``allocations``
+     - one class per family of EAR's tables, owning its flags, what they mean
+       and how its tables are read: :class:`~ear_db_export.selection.timeseries.TimeSelection`
+       and :class:`~ear_db_export.selection.jobs.JobSelection`
+   * - Read
+     - :mod:`ear_db_export.read`
+     - the sources: one method per access path (``scan``, ``window``,
+       ``lookup``, ``dump``); logical names in and out, types as stored
+   * - Shape
+     - :mod:`ear_db_export.layouts`, :mod:`ear_db_export.clean`
+     - one module per layout, its pipeline written top to bottom, with its
+       flow as a UML diagram in its docstring
    * - Write
-     - :mod:`ear_db_export.write`
-     - atomic Parquet or CSV files, Hive-style partitions, the bundle's
-       ``schema.sql``, ``SHA256SUMS`` and ``manifest.json``
+     - :mod:`ear_db_export.output`
+     - atomic files at ``--path``, the checkpoint, checksums and the manifest
+       (its guarantees: :mod:`ear_db_export.output`)
 
-Two modules drive the steps: :mod:`ear_db_export.schedule` picks the periods
-(one output, or one per day or month, with the watermark of
-``--incremental``), and :mod:`ear_db_export.pipeline` runs ``view`` and
-``export`` for each period. :mod:`ear_db_export.cli` comes first: it reads the
-flags and ear.conf (:mod:`ear_db_export.config`), opens the source and checks
-the schema profile.
+:mod:`ear_db_export.cli` runs the steps, the same for every layout: it opens
+the source (wrapped in :class:`~ear_db_export.read.pseudonymized.Pseudonymized`
+unless names stay in clear), resolves the time window (``--resume`` reads the
+checkpoint), opens the :class:`~ear_db_export.output.Output` and calls the
+layout's ``run(source, args, out)``. The tool schedules nothing: a cron job
+calls it with ``--resume``.
 
-Example run
------------
+The two families of tables
+--------------------------
 
-``view node_metrics job_nodes --every day --from 2026-07-04 --to 2026-07-04
---format node_metrics=long`` on a test cluster:
+EAR's tables are selected in two different ways, so each family has its own
+selection class, and a filter means one thing, in one place.
+:class:`~ear_db_export.selection.timeseries.TimeSelection` reads a time-series
+table by its own time column and by node.
+:class:`~ear_db_export.selection.jobs.JobSelection` reads ``Jobs`` by its
+columns and job ids, then the rows the job steps point to, by id:
 
-1. **Selection**: no job filter; the period limits it to 2026-07-04 00:00 to
-   2026-07-05 00:00 UTC.
-2. **Read**: ``Jobs`` gives the 73 steps that ended that day (one scan),
-   ``Applications`` the nodes they ran on (primary-key lookups). About 25
-   primary-key lookups find the ids of that day in ``Periodic_metrics``, then
-   one paged ``SELECT`` returns 14 071 rows.
-3. **Datasets**: ``node_metrics`` has 14 071 rows (one per node and minute);
-   ``job_nodes`` has 73 rows (one per step and node).
-4. **Format**: ``long`` turns ``node_metrics`` into 77 391 rows (one per node,
-   minute and metric that has a value); ``job_nodes`` stays ``wide``.
-5. **Write**: ``OUT/node_metrics/date=2026-07-04/part-0.parquet`` and
-   ``OUT/job_nodes/date=2026-07-04/part-0.parquet``.
+.. mermaid::
+
+   flowchart LR
+       subgraph TS[TimeSelection]
+           PM[Periodic_metrics]
+           EV[Events]
+           PA[Periodic_aggregations]
+           GE[Global_energy]
+       end
+       subgraph JS[JobSelection]
+           J[Jobs] -- "job, step, local_id" --> A[Applications]
+           A --> S[Signatures] --> G[GPU_signatures]
+           A --> P[Power_signatures]
+           J -- "job, step, local_id" --> L[Loops] --> S
+       end
+
+Which flag selects what, in which table, is in :mod:`ear_db_export.selection`.
+A layout adds the flags of the selection it uses (``add_arguments``), so
+``export job_nodes --users x`` is refused by argparse rather than ignored.
+``raw`` uses both: with job filters, the time-series tables are read over the
+selected jobs' time span and matched to them
+(:class:`~ear_db_export.selection.jobs.JobKeys`).
+
+Access paths: how each table is read
+------------------------------------
+
+Each read is one source method, an *access path*: ``scan``, ``window``,
+``lookup`` or ``dump`` (:mod:`ear_db_export.read`). Which one a table gets is
+fixed in code, by its keys in EAR's DDL and by the selection that reads it.
+:doc:`audit` lists every query a run sends, table by table, and
+:mod:`ear_db_export.read.sql` how each method builds them. A streamed
+``SELECT`` (``Jobs``, ``Loops``, tables without an integer key) runs on a
+connection of its own, so the lookups of each chunk can run while it is open.
+
+Memory
+------
+
+Nothing holds a whole table. A time-series layout holds one page (up to a
+million rows) at a time; a job layout one chunk of :data:`~ear_db_export.selection.jobs.CHUNK`
+job steps with their applications and signatures. The output writer keeps one
+open file per path and appends to it. Rows come in id order, which is roughly
+time order; there is no global sort.
 
 Names: logical and physical
 ---------------------------
 
 EAR's tables keep the same names in every version, but their columns change
-(EAR 7 renamed most). :data:`~ear_db_export.read.TABLES` lists every table
-and column with one set of *logical* names; a schema profile
+(EAR 7 renamed most). :data:`~ear_db_export.read.TABLES` lists every table and
+column with one set of *logical* names; a schema profile
 (:mod:`~ear_db_export.read.sql.profile`) maps them to the *physical* names of
-one EAR version, and holds that version's DDL (``profiles/ear7.sql``), which a
-test checks the profile covers.
+one EAR version.
 
-- Sources and bundles hold **physical** tables: nothing is renamed or
-  converted on the way to a bundle.
-- Filters are written on **logical** names; the profile maps them
-  (:meth:`~ear_db_export.read.sql.profile.Profile.where`) when a source reads.
-- The datasets read **logical** tables
-  (:meth:`~ear_db_export.read.sql.profile.Profile.logical`), restricted to the
-  columns of :data:`~ear_db_export.canonical.INPUTS`, so a column added to
-  ``TABLES`` does not change a dataset's schema.
-
-EAR's storage details are resolved before the datasets, so they never see
-them:
-
-- ``Periodic_metrics``, ``Events`` and ``Periodic_aggregations`` may have no
-  time index, so a time window is found by binary search on the primary key,
-  which works either way (:func:`~ear_db_export.read.sql.queries.bisect_id`).
-- A signature points to its GPUs with an id range whose step is the server's
-  auto-increment step (Galera uses steps > 1); bundles record the step.
-  :attr:`Records.gpu_signatures <ear_db_export.extract.Records.gpu_signatures>`
-  returns one row per GPU, linked to its signature.
-- EAR 5.0 added ``local_id`` to the key that links ``Jobs`` and
-  ``Applications``; joins use it when the profile maps it.
+- Sources rename at the boundary, and only rename:
+  :meth:`~ear_db_export.read.sql.profile.Profile.to_logical` on the way in,
+  :meth:`~ear_db_export.read.sql.profile.Profile.to_physical` back for ``raw``.
+  Types stay as stored until a layout calls :func:`~ear_db_export.clean.typed`.
+- Filters are :class:`~ear_db_export.read.Cond` lists on logical names; the
+  profile maps them (:meth:`~ear_db_export.read.sql.profile.Profile.where`),
+  then ``queries.where`` renders SQL and ``bundle.expression`` a pyarrow filter.
+- A ``raw`` dump without filters never renames anything (``dump``), and needs
+  no profile.
 
 What each module may know
 -------------------------
 
-These rules keep the steps independent; tests and reviews check them.
-
 - Only :mod:`~ear_db_export.read.sql.mariadb` imports the database driver, runs
   queries or writes engine-specific SQL.
-- Physical *column* names live only in the profiles; physical *table* names
-  (the same in every EAR version) also in :data:`~ear_db_export.extract.GROUPS`.
+- Physical column names live only in the profiles; physical table names (the
+  same in every EAR version) also in :data:`ear_db_export.layouts.raw.ORDER`.
+- A filter's meaning lives in its selection class; layouts choose a selection,
+  they do not build filters.
+- User fields are pseudonymised only by
+  :class:`~ear_db_export.read.pseudonymized.Pseudonymized`, before any layout
+  sees a row.
+- :mod:`ear_db_export.output` knows paths and files, not tables or layouts.
 - Nothing in the package opens a writable connection or contains a statement
   that changes data (``tests/test_api.py`` checks both).
-- User fields are pseudonymised only through
-  :func:`~ear_db_export.canonical.pseudonymize`: by the datasets for ``view``,
-  by the pipeline for ``export``, before anything is written.
-- Formats see one dataset and the ``--format-opt`` values, nothing else.
-- :mod:`ear_db_export.write` knows paths and files, not datasets or tables.
 
 Extending
 ---------
@@ -130,69 +144,26 @@ Extending
 
    * - To support
      - Add
+   * - A new layout
+     - A module in ``layouts/`` with ``NAME``, ``HELP``, ``READS``,
+       ``add_arguments`` and ``run``, using a selection; add it to
+       :data:`~ear_db_export.layouts.LAYOUTS`.
+   * - A new filter
+     - Its flag and condition in the selection class of its family
+       (``add_arguments``, ``from_args``, ``where``).
    * - A new EAR version
      - A profile and its DDL in ``read/sql/profiles/`` (``earN.toml`` and
-       ``earN.sql``; see ``ear7.toml`` for a version that renamed most
-       columns). A column the new version removed becomes optional (``?``) in
-       :data:`~ear_db_export.read.TABLES`; a new one is added there as optional.
+       ``earN.sql``). A column the new version removed becomes optional (``?``)
+       in :data:`~ear_db_export.read.TABLES`; a new one is added there as optional.
+   * - A new source
+     - A class with the members of a source (:mod:`ear_db_export.read`); a
+       source may offer only some tables (``has``), like
+       :class:`~ear_db_export.read.eacct.EacctSource`.
    * - PostgreSQL
      - ``read/sql/postgres.py`` with the functions of
-       :mod:`~ear_db_export.read.sql.mariadb`, and a flag to choose it (EAR's
-       backend is chosen when EAR is built and is not in ear.conf). EAR's
-       PostgreSQL schema has the same names, but unquoted, so in lower case: its
-       ``quote`` must lower-case names. ``columns()`` and ``show_create()``
-       must be emulated from ``information_schema``. EAR's PostgreSQL writer
-       takes the first GPU id from the wrong sequence
-       (``postgresql_io_functions.c``), so GPU ranges there need checking.
-   * - Prometheus (node metrics only)
-     - A source whose ``provides`` is ``{"Periodic_metrics"}`` and whose
-       ``scan`` queries a Prometheus server; a run can then take node metrics
-       from it and jobs from the database. Its values are W, not J, and its
-       metric names changed in EAR 7.
-   * - A new output shape
-     - A format function in :data:`~ear_db_export.formats.FORMATS` (:doc:`reference`).
-   * - A new dataset
-     - A builder and an entry in :data:`~ear_db_export.canonical.DATASETS`
-       (and its formats in :data:`~ear_db_export.formats.FORMATS`).
-   * - A new filter
-     - A field of :class:`~ear_db_export.selection.Selection`, its flag in
-       :mod:`ear_db_export.cli`, and its condition in ``job_where``.
-   * - Loading a bundle into a database, synthetic data
-     - Not here: this package only reads. EAS's internal ``ear-db-synth`` does
-       both, on top of this package's profiles and bundles.
-
-Not loading the production database
------------------------------------
-
-- **Read-only.** The connection uses ``DBCommandsUser`` and sets the session
-  to ``READ ONLY`` (:func:`~ear_db_export.read.sql.mariadb.connect`).
-- **No server-side joins.** Queries are single-table scans or primary-key
-  lookups in batches of 5000 keys; joins happen in pyarrow.
-- **No time index needed.** A time window of ``Periodic_metrics`` (and
-  ``Events``, ``Periodic_aggregations``) is found by binary search over
-  primary-key ids, about 25 lookups, then read in primary-key pages with
-  ``id BETWEEN``, whether or not the site has an index.
-- **Short queries.** Tables with an integer key are read in pages of a million
-  rows, so the server never holds a long read open on them. ``Jobs`` (small)
-  and ``Loops`` (no key at all) are read with one streamed scan.
-- **Streaming.** Results are read in batches of 100 000 rows with an
-  unbuffered cursor; with ``--every`` one period is in memory at a time.
-- ``--dry-run`` makes the source print every query with its ``EXPLAIN`` and
-  row count instead of reading, so the access plan can be checked on the
-  production database before a real run. :doc:`audit` lists every query.
-
-Output guarantees
------------------
-
-- Each file is written as ``.tmp`` and renamed: readers never see half a file.
-- Re-running a partition produces the same content.
-- A bundle's ``manifest.json`` is written last, after ``SHA256SUMS``, and after
-  every period with ``--every``: a bundle with a manifest is complete up to
-  its last period.
-- ``--incremental`` moves its watermark after each finished day, so a failed
-  run resumes from the failed day.
-- The 0.3.0 dataset files are reproduced byte for byte in content by the
-  0.4.0 commands (``tests/test_golden.py``).
+       :mod:`~ear_db_export.read.sql.mariadb`, and a flag to choose it. EAR's
+       PostgreSQL schema has the same names, unquoted, so in lower case: its
+       ``quote`` must lower-case names.
 
 Package layout
 --------------
@@ -200,18 +171,14 @@ Package layout
 .. code-block:: text
 
    src/ear_db_export/
-     cli.py          command line (check, export, view), exit codes
-     config.py       ear.conf: connection, node tags, hostlists
-     selection.py    the filters of a run
-     schedule.py     which periods: one output, days with a watermark, whole months
-     pipeline.py     view and export, period by period
-     extract.py      follow EAR's links; Records for the datasets
-     read/           TABLES (logical names); bundle.py: BundleSource
-       sql/          EAR's SQL database: SqlSource, queries, mariadb engine,
-                     profile.py and profiles/ (TOML + EAR's DDL per version)
-     canonical.py    the datasets
-     eacct.py        eacct's CSV layout, as data
-     formats.py      output shapes
-     write.py        Parquet/CSV files, partitions, lock, bundle files
+     cli.py            command line (check, export LAYOUT), exit codes
+     config.py         ear.conf: connection, node tags, hostlists
+     layouts/          one module per layout: raw, node_metrics, job_nodes, power_signatures, eacct
+     selection/        Window and the shared flags; timeseries.py: TimeSelection; jobs.py: JobSelection
+     read/             TABLES, Cond; sources: bundle.py, eacct.py (also eacct's CSV layout), pseudonymized.py
+       sql/            EAR's SQL database: SqlSource, queries, mariadb engine,
+                       profile.py and profiles/ (TOML + EAR's DDL per version)
+     clean.py          types, timestamps, NULLs, node tags, pseudonyms
+     output.py         bundles: paths, files, checkpoint, checksums, manifest
 
 The stable Python API that other programs import is listed in :doc:`api`.

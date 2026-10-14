@@ -1,7 +1,7 @@
 [project]
 name = "ear-db-export"
-version = "0.4.0"
-description = "Read-only export of EAR data: bundles of its tables, and analysis datasets"
+version = "0.5.0"
+description = "Read-only export of EAR data: its tables as stored, or layouts for analysis"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -15,8 +15,10 @@ ear-db-export = "ear_db_export.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=7"]
-# Sphinx documentation: uv run --group docs sphinx-build -b html docs docs/_build/html
-docs = ["sphinx>=7", "sphinx-rtd-theme>=2", "sphinx-design>=0.5", "myst-parser>=3"]
+# Sphinx documentation (how to build it: docs/development.rst). sphinxcontrib-mermaid 2
+# needs Python 3.10.
+docs = ["sphinx>=7", "sphinx-rtd-theme>=2", "sphinx-design>=0.5", "myst-parser>=3",
+        "sphinxcontrib-mermaid>=1.2,<2"]
 
 [build-system]
 requires = ["hatchling"]

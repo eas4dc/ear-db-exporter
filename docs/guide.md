@@ -2,213 +2,242 @@
 
 `ear-db-export` reads the data EAR collects (node metrics, jobs, power and
 application signatures, loops, events) out of EAR's database and writes it to
-files, in two ways:
+files. One command, `export LAYOUT`, where the *layout* says what to write:
 
-- **`export`** writes the tables **as stored**, the rows you select and the
-  rows they point to, as a *bundle*: Parquet files plus `schema.sql`,
-  `SHA256SUMS` and `manifest.json`. For archiving, moving data between sites,
-  or sending an extract to EAS.
-- **`view`** writes **datasets** for analysis: one clean table per subject
-  (joined, UTC timestamps, NULLs, units), in Parquet or CSV, including
-  `eacct`'s own CSV layout.
+```{layouts}
+```
+
+`raw` is for back-ups, moving or archiving a database and sending a subset of
+it; the other layouts are clean tables for analysis: node power and energy over
+time, who ran where and when, the power of every job, and eacct's own files.
 
 It only reads: no writes to the database, no temporary tables, no indexes
 added ({doc}`audit` has the details and how to check them). It writes only to
 an output directory (`--out`). Copying the files elsewhere (S3, a data lake,
-another site) is a separate step you own; see
-[](#example-publishing-to-a-data-lake). What the files hold: {doc}`data`.
+another site) is a separate step you own. What the files hold: {doc}`data`.
 
 ## How a run works
 
-```
-filters ─► Selection ─► source (database, or --bundle) ─► extract ─┬─► export: tables as stored ─► OUT/<Table>.parquet + manifest
-                                                                    └─► view: datasets ─► formats ─► OUT/<dataset>.parquet|csv
+```mermaid
+flowchart LR
+    F[flags] --> S[selection] --> R["source<br/>database,<br/>--bundle or --eacct"] --> L[layout] --> B[bundle in --out]
 ```
 
-| Step | What happens | Example (`view node_metrics job_nodes`, one day) |
+| Step | What happens | Example (`export node_metrics`, one day) |
 |---|---|---|
-| Select | Turn the filter flags into a Selection | `--from 2026-07-04 --to 2026-07-04` |
-| Read | Read the selected job steps, then follow EAR's links to the other tables | 73 `Jobs` rows, their `Applications`; 14 071 `Periodic_metrics` rows |
-| Build (`view`) | One clean table per subject | `node_metrics` (one row per node and minute), `job_nodes` (one row per job step and node) |
-| Format (`view`) | Shape it for its consumer (`--format`) | `node_metrics` in `long` format: 77 391 rows |
-| Write | One file per table or dataset (and period) | `OUT/node_metrics/date=2026-07-04/part-0.parquet` |
+| Select | The layout's flags become a selection: time-series rows by time and node, or job steps by `Jobs` columns | `--from 2026-07-04 --to 2026-07-04` |
+| Read | The source reads page by page (time series) or 5000 job steps at a time, following EAR's links | 14 071 `Periodic_metrics` rows |
+| Shape | The layout cleans and shapes each batch | 77 391 rows, one per node, minute and metric |
+| Write | Files at `--path` in `--out`, then `SHA256SUMS`, `checkpoint.json`, `manifest.json` | `OUT/node_metrics.parquet` |
 
-## The source: EAR's database, or a bundle
+## The source: EAR's database, a bundle, or eacct files
 
 EAR stores its data in MariaDB/MySQL; this is the engine the tool ships.
 
 - **Connection from ear.conf** (`--conf`, default `$EAR_ETC/ear/ear.conf`,
   else `/etc/ear/ear.conf`): `DBIp`, `DBPort`, `DBDatabase`, and the
   **read-only** `DBCommandsUser` / `DBCommandsPassw` (never `DBUser`). They
-  are read exactly as EAR reads them (case-insensitive keys, `MariaDB*`
-  aliases, EAR's defaults for missing keys), so the tool connects where
-  `eacct` connects. The `Island=` lines give each node its tag (`node_tag`,
-  `--tags`). The password is never logged.
+  are read exactly as EAR reads them, so the tool connects where `eacct`
+  connects. The `Island=` lines give each node its tag (`node_tag`, `--tags`).
+  The password is never logged.
 - **Or explicit flags:** give **all** of `--db-host --db-port --db-name
   --db-user --db-password-file`. Then ear.conf is not used for the
-  connection; pass `--conf` too if you want node tags. The password is read
-  from a file so it does not show up in `ps`.
-- **Or a bundle:** `--bundle DIR` reads a bundle written by `export` instead
-  of the database, with the same filters: views of data a site sent, CSV from
-  an archive, a smaller extract of a bigger one.
-- The session is set to `READ ONLY`, so a write fails even if the account
-  could write.
+  connection; pass `--conf` too if you want node tags.
+- **Or a bundle:** `--bundle DIR` reads a bundle written by `export raw`, with
+  the same filters: layouts of data a site sent, a smaller extract of a bigger one.
+  Node tags come from the bundle's manifest, or from `--conf` if given.
+- **Or eacct files:** `--eacct FILE` (repeatable) reads `eacct -l -c` CSV files
+  of eacct 5, 6 or 7, for the job layouts (`job_nodes`, `power_signatures`,
+  `eacct`). Rows get new ids, and only the epoch `*_TIME` columns are read
+  (eacct's `*_DATE` are in local time).
+- The session is set to `READ ONLY`, so a write fails even if the account could write.
 
-**Schema profiles.** EAR versions name some columns differently (the job key
-is `Jobs.id` in EAR 4.3 and `Jobs.job_id` from EAR 5.0; EAR 7 renamed most
-columns). A profile maps the names the tool uses to the names of one EAR
+**Schema profiles.** EAR versions name some columns differently (EAR 7
+renamed most). A profile maps the names the tool uses to the names of one EAR
 version: `ear4` (EAR 4.3), `ear6` (EAR 5.0 – 6.x) or `ear7` (EAR 7). It is
-autodetected from the database, or forced with `--profile`. `ear-db-export
-check` compares the profile with the database and exits `2` on a mismatch.
-Filters and datasets need a profile; an `export` without filters does not,
-so any EAR version can be exported whole. See {doc}`reference`.
+autodetected, or forced with `--profile NAME` (or `--profile FILE.toml`, a
+profile of your own). `ear-db-export check` compares it
+with the database and exits `2` on a mismatch. Every layout needs a matching
+profile, except `raw` without filters, so any EAR version can be dumped whole.
 
 ## Filters
 
-Every filter is optional; without any, `export` reads the whole tables.
-Different flags combine with AND, the values of one flag with OR
-(`--users a,b --apps 'lmp*'` is "user a or b, and an application starting
-with lmp").
+Each layout takes only the filters that apply to it; `export LAYOUT --help`
+lists them, and a flag a layout does not take is an error. Different flags
+combine with AND, the values of one flag with OR (`--users a,b --apps 'lmp*'`
+is "user a or b, and an application starting with lmp").
 
-| Flag | Selects |
-|---|---|
-| `--from DATE --to DATE` | job steps that **ended** in the range, and rows (periodic metrics, events, …) that end in it. `YYYY-MM-DD` is a whole UTC day (`--to` included); `YYYY-MM-DDTHH:MM[:SS]` an exact UTC time (`--to` excluded) |
-| `--jobs` | job ids, in `eacct -j` syntax plus ranges: `123,456.0,1000-2000,789.sb` (`.0` a step, `.sb` the batch step) |
-| `--users --accounts --groups` | users, Slurm accounts, Unix groups (comma-separated) |
-| `--apps` | application names, with `*` and `?` wildcards: `--apps 'lmp*,python'` |
-| `--etags --policies` | energy tags, EAR policies |
-| `--nodes` | nodes, as a Slurm hostlist: `--nodes 'cpu[001-064],gpu01'` |
-| `--tags` | the nodes of these ear.conf `Island` tags: `--tags gpu` |
-| `--batch-steps` | job granularity: only each job's batch step (Slurm's batch script step), with every periodic row of the job. Jobs launched with `srun` alone have no batch step and are left out |
-| `--sample N --seed S` | N jobs picked at random (the same N for the same seed) |
-| `--limit N` | the newest N jobs, by end time (like `eacct -n`) |
-| `--tables` | `export` only: table groups `jobs` (Jobs, Applications, Power_signatures, Signatures, GPU_signatures), `loops`, `periodic`, `events`, `energy` (Periodic_aggregations, Global_energy), `learning`, `all`, or table names. Default `jobs,periodic` |
-
-What the rows of each table are, given the filters:
-
-- **Job steps** (`Jobs`) match the job filters. Their **applications** (one per
-  step and node), **power and application signatures**, **GPU signatures**
-  and **loops** follow. With `--nodes`, only those nodes' applications and
-  loops are kept, and the job steps that ran there.
-- **Periodic metrics and events**: with job filters (`--jobs`, `--users`, …)
-  only the rows of the selected jobs (idle rows are left out), from their
-  first start to their last end. Without job filters, every row in the time
-  range, idle nodes included, on `--nodes` if given.
-- **Periodic aggregations, global energy**: the time range.
-- **Learning tables** (`Learning_*`): whole.
+| Flag | Selects | Layouts |
+|---|---|---|
+| `--from DATE --to DATE` | rows whose time is in the window: `YYYY-MM-DD` is a whole UTC day (`--to` included), `YYYY-MM-DDTHH:MM[:SS]` an exact UTC time (`--to` excluded). Job steps are in the window they **ended** in. `--to` cannot be in the future | all |
+| `--resume` | start where the last run into `--out` ended (its checkpoint); `--from` is only the first run's start. Needs `--to` | all |
+| `--nodes` | nodes, as a Slurm hostlist: `--nodes 'cpu[001-064],gpu01'` | all |
+| `--tags` | the nodes of these ear.conf `Island` tags: `--tags gpu` | all |
+| `--jobs` | job ids, in `eacct -j` syntax plus ranges: `123,456.0,1000-2000,789.sb` (`.0` a step, `.sb` the batch step) | `raw`, `power_signatures`, `eacct` |
+| `--users --accounts --groups` | users, Slurm accounts, Unix groups (comma-separated) | same |
+| `--apps` | application names, with `*` and `?` wildcards: `--apps 'lmp*,python'` | same |
+| `--etags --policies` | energy tags, EAR policies | same |
+| `--batch-steps` | job granularity: only each job's batch step. Jobs launched with `srun` alone have no batch step and are left out | same |
+| `--limit N` | the newest N job steps, by end time (eacct's `-n` counts jobs). Applied in the query, before `--nodes`: with `--nodes` you may get fewer | same |
 
 On a pseudonymised bundle, give user filters as pseudonyms.
 
-## Commands
+### Flags of each layout
 
-| Command | What it writes |
-|---|---|
-| `check` | nothing: the account's grants, whether the session is read-only, and the profile compared with the database (exit `2` on a mismatch) |
-| `export` | a bundle: the selected tables as stored, `schema.sql`, `SHA256SUMS`, `manifest.json` |
-| `view DATASET …` | datasets: `node_metrics`, `job_nodes`, `power_signatures`, `app_signatures`, `gpu_signatures`, `eacct` ({doc}`data`) |
+The `--help` of each layout, as the tool prints it:
+
+````{dropdown} export raw
+```{export-help} raw
+```
+````
+
+````{dropdown} export node_metrics
+```{export-help} node_metrics
+```
+````
+
+````{dropdown} export job_nodes
+```{export-help} job_nodes
+```
+````
+
+````{dropdown} export power_signatures
+```{export-help} power_signatures
+```
+````
+
+````{dropdown} export eacct
+```{export-help} eacct
+```
+````
+
+## Layouts
 
 ```bash
 ear-db-export check
-ear-db-export export --users alice --from 2026-09-01 --to 2026-09-30 --tables jobs,periodic,loops --out /data/alice-sep --salt-file /etc/ear-db-export/salt
-ear-db-export view node_metrics job_nodes --every day --incremental --out /data/ear --salt-file /etc/ear-db-export/salt
-ear-db-export view eacct --as csv --jobs 123456 --out /tmp/job --salt-file /etc/ear-db-export/salt
-ear-db-export view app_signatures --bundle /data/site-x-2026 --out /tmp/site-x
+ear-db-export export raw --out /data/ear-dump --salt-file /etc/ear-db-export/salt
+ear-db-export export raw --users alice --from 2026-09-01 --to 2026-09-30 --out /data/alice-sep --salt-file …
+ear-db-export export node_metrics --service mycluster --from 2026-09-01 --to 2026-09-30 --hive --out /data/nm --salt-file …
+ear-db-export export job_nodes --from 2026-09-01 --to 2026-09-30 --tags gpu --out /data/jn --salt-file …
+ear-db-export export power_signatures --batch-steps --from 2026-09-01 --to 2026-09-30 --out /data/ps --salt-file …
+ear-db-export export eacct --as csv --jobs 123456 --out /tmp/job --salt-file …
+ear-db-export export power_signatures --bundle /data/site-x --out /tmp/site-x
 ```
 
-Flags go after the command. Exit codes: `0` ok, `1` runtime error (DB, I/O),
+Flags go after the layout. Exit codes: `0` ok, `1` runtime error (DB, I/O),
 `2` configuration or schema error. Logs go to stdout (UTC timestamps) and end
-with a summary of the files written. `ear-db-export <command> --help` lists
-every flag.
+with a summary of the files written. Flags can also come from a file, one per
+line: `ear-db-export export node_metrics @/etc/ear-db-export/daily.args`
+(lines like `--out=/data/ear`).
 
-### Bundles (`export`)
+### `raw`: the tables as stored
 
 ```
 OUT/manifest.json      # what, from where, how: written last, so a bundle without it is incomplete
 OUT/SHA256SUMS         # checksums of every file: sha256sum -c SHA256SUMS
-OUT/schema.sql         # the CREATE TABLE statements of the tables, as the server prints them
+OUT/schema.sql         # the CREATE TABLE statements, as the server prints them
 OUT/Jobs.parquet       # one file per table, every column, EAR's own names and exact types
 OUT/Periodic_metrics.parquet
 …
 ```
 
-With `--every day` or `--every month` each table is one partition per day or
-month instead (`OUT/Periodic_metrics/date=2026-09-01/part-0.parquet`), and the
-manifest and checksums are updated after each period, so a bundle is
-consistent even if a long export stops half-way. The manifest records the
-source (database, server, EAR schema profile, auto-increment step), the
-filters (users pseudonymised), whether user fields are pseudonymised and a
-fingerprint of the salt; a bundle never mixes salts.
+- **Without filters**, every table named (default all) is copied whole.
+- **With filters** it is a *linked dump*: the job steps the filters pick, and
+  every row they point to (applications, signatures, GPU signatures, loops);
+  the time-series tables by their own time in the window, or, with job
+  filters, the rows of the selected jobs over their time span. `Learning_*`
+  tables are only included when named, and then whole.
+- Without job filters, consecutive windows split the database without gaps
+  or repeats, so a monthly archive is one run per month (`--path
+  '{table}_{from}.{ext}'` keeps them in one bundle). With job filters, the
+  time-series rows follow their jobs, so a job whose steps end in two windows
+  has its rows in both.
+- `raw` writes Parquet only; `--bundle` reads it back.
 
-Without filters and `--tables all`, `export` is a dump of the whole database
-(any EAR version). Try `--dry-run` first on a large database: it prints every
-query with its `EXPLAIN` and row count, and writes nothing.
+Try `--dry-run` first on a large database: it prints every query with its
+`EXPLAIN` and row count, and writes nothing.
+
+### The other layouts
+
+{doc}`data` describes their columns. `node_metrics` needs `--service NAME`
+(the value of its `service` column). `--as csv` writes CSV instead of Parquet
+(`eacct` uses `;`, as eacct does; `node_metrics` is Parquet only).
+
+User names, accounts and groups are pseudonymised before anything is written,
+with a secret you create once and pass as `--salt-file`
+(`umask 077; head -c 32 /dev/urandom | base64 > /etc/ear-db-export/salt`).
+Keep the same file forever so pseudonyms stay joinable across runs. Without
+it the tool refuses to run unless you pass `--no-pseudonymize`; a dry run, and
+a pseudonymised bundle, need neither. Which fields, and how:
+{doc}`audit`.
+
+## Where files go: `--path` and `--hive`
+
+By default a layout writes one file, `OUT/<layout>.<ext>` (`raw`: one per
+table, `OUT/<Table>.parquet`). `--path TEMPLATE` chooses the path inside
+`--out`, with the fields `{layout} {table} {ext} {from} {to}` and, per row,
+`{date} {year} {month} {day}` (what each holds: {mod}`ear_db_export.output`):
+
+```bash
+--hive                                                    # = --path '{layout}/date={date}/part-0.{ext}'
+--path '{layout}/year={year}/month={month}/part-0.{ext}'  # Hive by month
+--path '{layout}_{from}_{to}.{ext}'                       # one file per run
+```
+
+The per-row fields split the rows into files: with `--hive` a month of node
+metrics becomes one file per day. pyarrow, DuckDB
+(`read_parquet('OUT/node_metrics/*/*.parquet', hive_partitioning=true)`),
+Spark and Polars read such a directory as one table with a `date` column.
+
+A run into an existing bundle adds its files to it (files with the same path
+are replaced), as long as it is the same layout and the same salt. Two runs on
+the same `--out` at once are refused.
+
+## Resuming from cron: `--resume` and the checkpoint
+
+The tool schedules nothing. A run with a time window records its end in
+`OUT/checkpoint.json` (the manifest points to it; it never moves back), and
+`--resume` starts there. So a cron script always passes the same flags:
+
+```bash
+#!/bin/sh
+# /etc/cron.daily/ear-db-export: every complete day up to 2 days ago
+set -e
+TO=$(date -u -d '2 days ago' +%F)
+S="--salt-file /etc/ear-db-export/salt"
+ear-db-export export node_metrics --service mycluster --hive --resume --from 2026-10-01 --to "$TO" \
+    --out /data/ear/node_metrics $S
+ear-db-export export job_nodes --hive --resume --from 2026-10-01 --to "$TO" --out /data/ear/job_nodes $S
+```
+
+- The first run starts at `--from`; later runs at the checkpoint, so missed days
+  are caught up. A run that is up to date does nothing and exits `0`.
+- The checkpoint moves only when the whole run succeeded; a failed run is
+  simply run again (its files are rewritten).
+- How far behind to stay (`2 days ago`: EARDBD inserts rows with a delay), when
+  to run, retries and alerts are the script's choice.
+- **EAR prunes `Periodic_metrics` (about every 2 months by default), so a broken
+  daily run loses data.**
+
+For a monthly export, give one window per month:
+`--from 2026-09-01 --to 2026-09-30 --path '{layout}_{from}.{ext}'`.
 
 ### Sending an extract to EAS
 
-For a large extract (months of data, a whole cluster), run `export` on your
+For a large extract (months of data, a whole cluster), run `export raw` on your
 site rather than `eacct`: it writes compressed, typed files, includes the
-periodic metrics, pseudonymises users before anything leaves the site, and
-can be resumed.
+periodic metrics, and pseudonymises users before anything leaves the site.
 
 ```bash
 umask 077; head -c 32 /dev/urandom | base64 > ~/ear-salt            # once; keep it private
-ear-db-export export --dry-run --from 2026-01-01 --to 2026-06-30    # what it would read
-ear-db-export export --from 2026-01-01 --to 2026-06-30 --every month \
-    --tables jobs,periodic,loops --out /scratch/ear-extract --salt-file ~/ear-salt
+ear-db-export export raw --dry-run --from 2026-01-01 --to 2026-06-30 --out /scratch/ear-extract
+ear-db-export export raw --from 2026-01-01 --to 2026-06-30 --out /scratch/ear-extract --salt-file ~/ear-salt
 cd /scratch/ear-extract && sha256sum -c SHA256SUMS                  # all OK
-rsync -av /scratch/ear-extract/ receiver:/incoming/site-x/          # resumable; or any tool
+rsync -av /scratch/ear-extract/ receiver:/incoming/site-x/          # or any tool
 ```
 
-If it stops, run it again with `--overwrite` left out: months already written
-are skipped. The receiver checks the files with `sha256sum -c SHA256SUMS`.
-Loops are big and read with a full table scan ({doc}`audit`); leave them out
-if they are not needed.
-
-### Datasets (`view`)
-
-Each dataset is written in one format, chosen with `--format DATASET=FORMAT`
-(repeatable). Options for the formats go in `--format-opt KEY=VALUE`.
-
-| Format | Datasets | Shape |
-|---|---|---|
-| `wide` (default) | all | the dataset as it is: one column per variable |
-| `long` | `node_metrics` | long ("tidy") format: one row per (node, interval, metric), with Prometheus-style metric names and a `labels` map. Needs `--format-opt service=NAME`; `source` defaults to `ear`. Parquet only |
-| `allocations` | `job_nodes` | Slurm-style allocation records: `job_id, step_id, local_id, node, start, end`, user fields, application, `node_tag` |
-
-`--as csv` writes CSV instead of Parquet (`eacct` uses `;`, as eacct does).
-
-User fields (`user_id`, `user_acc`, `user_group`) are pseudonymised before
-anything is written: `--salt-file` is a secret you create once, and each value
-is replaced by `HMAC-SHA256(salt, value)`, first 16 hex digits. Keep the same
-file forever so pseudonyms stay joinable across runs. Without it the tool
-refuses to run unless you pass `--no-pseudonymize`. A pseudonymised bundle
-needs neither: its values are already pseudonyms.
-
-### Periods (`--every`)
-
-| Flags | Writes |
-|---|---|
-| (none) | one file per table or dataset for the whole selection: `OUT/<name>.parquet` |
-| `--every day --from A --to B` | one partition per UTC day: `OUT/<name>/date=YYYY-MM-DD/part-0.parquet` |
-| `--every month [--from A --to B]` | one partition per calendar month (`month=YYYY-MM`); default the last 12 complete months. Only whole, finished months: `--from/--to` are widened to the months they fall in, the current month is skipped until it ends |
-| `--every day --incremental` | every day after the *watermark* up to `today − --lag-days` (default 2): the daily timer |
-
-Partitions whose files all exist are skipped; `--overwrite` redoes them.
-`--incremental` keeps the *watermark* (the last day fully exported) in
-`OUT/.ear_export_state.json` (or `--state`) and moves it after each finished
-day, so a crash resumes from the failed day; on its first run it starts at the
-*prune horizon* (the oldest day still in `Periodic_metrics`). `--from/--to`
-moves the watermark only with `--update-state`. It warns when the oldest
-pending day is within 7 days of the prune horizon. **EAR prunes
-`Periodic_metrics` (about every 2 months by default), so a broken timer loses
-data.**
-
-Partitions are Hive-style: `pyarrow.dataset`, DuckDB
-(`read_parquet('OUT/node_metrics/*/*.parquet', hive_partitioning=true)`),
-Spark and Polars read a directory as one table with a `date` or `month`
-column. Use one `--out` per format choice: a partition written in another
-format is replaced, not kept beside it. Two runs on the same `--out` at once
-are refused (the second stops with an error).
+`Loops` is big and read with one full table scan ({doc}`audit`); name the
+tables you need to leave it out.
 
 ## Install
 
@@ -216,7 +245,7 @@ Needs Python ≥ 3.9 and [uv](https://docs.astral.sh/uv/). Runtime
 dependencies: `pymysql`, `pyarrow` (and `tomli` on Python < 3.11), pinned in `uv.lock`.
 
 ```bash
-uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.4.0   # puts `ear-db-export` on PATH
+uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.5.0   # puts `ear-db-export` on PATH
 # or, from a checkout or an unpacked release:
 uv tool install /path/to/ear-db-exporter
 ```
@@ -224,7 +253,7 @@ uv tool install /path/to/ear-db-exporter
 No internet on the admin node? On a connected machine with the same OS and Python:
 
 ```bash
-uv build -o wheels && uv export --no-dev --no-hashes -o req.txt
+uv build -o wheels && uv export --no-dev --no-hashes --no-emit-project -o req.txt
 pip download -r req.txt -d wheels
 # copy wheels/ over, then:
 python3 -m venv /opt/ear-db-export && /opt/ear-db-export/bin/pip install --no-index -f wheels ear-db-export
@@ -234,71 +263,28 @@ python3 -m venv /opt/ear-db-export && /opt/ear-db-export/bin/pip install --no-in
 
 ```bash
 umask 077; head -c 32 /dev/urandom | base64 > /etc/ear-db-export/salt   # once, keep it
-OPTS="--out /data/ear-db-export --salt-file /etc/ear-db-export/salt"
-DAYS="node_metrics job_nodes --every day"
+NM="node_metrics --service mycluster --hive --out /data/ear/node_metrics --salt-file /etc/ear-db-export/salt"
 
-ear-db-export check                                           # 1. exit 0 = profile matches
-ear-db-export view $DAYS --from 2026-09-01 --to 2026-09-01 --dry-run $OPTS
-                                                              # 2. SQL, EXPLAIN, row counts, paths; writes nothing
-ear-db-export view $DAYS --from 2026-09-01 --to 2026-09-01 $OPTS   # 3. one real day; inspect it
-ear-db-export view $DAYS --incremental $OPTS                  # 4. catch up from the oldest row, then enable the timer
+ear-db-export check                                                     # 1. exit 0 = profile matches
+ear-db-export export $NM --from 2026-09-01 --to 2026-09-01 --dry-run   # 2. SQL, EXPLAIN, row counts, paths
+ear-db-export export $NM --from 2026-09-01 --to 2026-09-01             # 3. one real day; inspect it
+ear-db-export export $NM --resume --from 2026-09-02 --to "$(date -u -d '2 days ago' +%F)"
+                                                                        # 4. catch up, then install the cron script
 ```
 
-On step 4 without a state file it starts at the prune horizon. That day is
-partial because older rows were pruned.
-
-## Scheduling
-
-systemd (`/etc/systemd/system/ear-db-export.{service,timer}`):
-
-```ini
-# ear-db-export.service
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/ear-db-export view node_metrics job_nodes --every day --incremental --out /data/ear-db-export --salt-file /etc/ear-db-export/salt
-
-# ear-db-export.timer
-[Timer]
-OnCalendar=*-*-* 03:15:00 UTC
-Persistent=true
-[Install]
-WantedBy=timers.target
-```
-
-cron: `15 3 * * * root /usr/local/bin/ear-db-export view node_metrics job_nodes --every day --incremental --out /data/ear-db-export --salt-file /etc/ear-db-export/salt >> /var/log/ear-db-export.log 2>&1` (with `CRON_TZ=UTC`).
-
-Upgrading from 0.3.0: the `periodic` command became the `view` line above;
-it reads the same watermark file and writes the same files (`CHANGELOG.md`).
-
-(example-publishing-to-a-data-lake)=
 ## Example: publishing to a data lake
 
-The tool stops at `--out`. A wrapper run by cron or systemd chooses the
-formats and copies the partitions into whatever layout the destination
-expects. This one exports in long and allocation formats and copies each day
-into a lake that partitions by service, source and date:
+The tool stops at `--out`. A wrapper run by cron chooses where each file goes;
+`--path` can already match the lake's layout, so the copy is one command:
 
 ```bash
 #!/bin/bash
 set -euo pipefail
-OUT=/data/ear-db-export
-LAKE=remote:bucket          # an rclone remote, or a mounted path with cp
+OUT=/data/ear-lake
 SERVICE=mycluster
-
-ear-db-export view node_metrics job_nodes --every day --incremental \
-    --format node_metrics=long --format job_nodes=allocations --format-opt service="$SERVICE" \
+ear-db-export export node_metrics --service "$SERVICE" --resume --from 2026-10-01 \
+    --to "$(date -u -d '2 days ago' +%F)" \
+    --path "metrics/service=$SERVICE/source=ear/date={date}/ear_periodic_metrics.{ext}" \
     --out "$OUT" --salt-file /etc/ear-db-export/salt
-
-for f in "$OUT"/node_metrics/date=*/part-0.parquet; do
-    d=$(basename "$(dirname "$f")")                 # date=YYYY-MM-DD
-    rclone copyto "$f" "$LAKE/metrics/service=$SERVICE/source=ear/$d/ear_periodic_metrics.parquet"
-done
-for f in "$OUT"/job_nodes/date=*/part-0.parquet; do
-    d=$(basename "$(dirname "$f")")
-    rclone copyto "$f" "$LAKE/jobs/service=$SERVICE/source=ear/$d/ear_job_allocations.parquet"
-done
+rclone copy "$OUT/metrics" remote:bucket/metrics     # copies new and changed files only
 ```
-
-Copy, don't move: monthly runs skip months whose partition is still in
-`--out`, and `rclone copyto` skips files that have not changed, so a failed
-upload is simply retried on the next run.

@@ -1,13 +1,13 @@
-"""Schema profiles: the names one EAR version uses in its SQL database, and ``check``.
+"""Schema profiles: how one EAR version names its tables and columns, and what ``check`` compares.
 
 The exporter uses the *logical* table and column names of
 :data:`ear_db_export.read.TABLES` (``app_name``), the same for every EAR
 version. A profile (a TOML file in ``read/sql/profiles/``) maps them to the
-*physical* names of one EAR schema version (``Jobs.app_id``). Sources return
-tables with their physical names (as stored); :meth:`Profile.logical` turns
-them into logical ones for the datasets, :meth:`Profile.where` turns filters
-on logical names into physical ones, so nothing after it depends on the EAR
-version.
+*physical* names of one EAR schema version (``Jobs.app_id``). Sources read
+tables with their physical names and rename them with :meth:`Profile.to_logical`
+(types unchanged), and map filters with :meth:`Profile.where`, so nothing after
+a source depends on the EAR version. :meth:`Profile.to_physical` renames back,
+for ``export raw``.
 
 A profile file looks like this:
 
@@ -35,16 +35,13 @@ import logging
 import os
 from dataclasses import dataclass
 
-import pyarrow as pa
-import pyarrow.compute as pc
-
 try:
     import tomllib
 except ImportError:  # Python < 3.11
     import tomli as tomllib
 
 from ...config import ConfigError
-from .. import ARROW, OPTIONAL_TABLES, TABLES, col_type, is_optional
+from .. import OPTIONAL_TABLES, TABLES, Cond, col_type, is_optional
 
 log = logging.getLogger(__name__)
 
@@ -66,14 +63,21 @@ class Profile:
     columns: dict  # logical table -> {logical col: physical col}
 
     def bind(self, live):
-        """Drop what the live database lacks and may lack: optional columns and tables.
+        """Fit the profile to a live database: drop what it lacks and may lack.
 
-        Changes the profile in place, so later reads return NULL for those
-        columns instead of failing. Each dropped column is logged as a warning;
-        a missing optional table is logged at info level.
+        Optional columns and optional tables the database does not have are
+        removed from the profile (in place), so reads return them as NULL
+        instead of failing. Each dropped column is logged as a warning, each
+        missing optional table at info level.
 
-        :param live: ``{table: {column: type}}`` from the engine's ``live_columns``.
+        It also refuses a database where a column the profile does not map has
+        the name of a logical column of its table: renaming to logical names
+        would then give two columns the same name.
+
+        :param live: ``{physical table: {physical column: type}}``, from the
+            engine's ``live_columns`` (only the names are used).
         :returns: the profile itself, for chaining.
+        :raises ConfigError: on such a name clash.
         """
         for t in [t for t in self.tables if t in OPTIONAL_TABLES and self.tables[t] not in live]:
             log.info("no %s table in the DB (optional)", self.tables[t])
@@ -83,6 +87,11 @@ class Profile:
             for c in [c for c, p in cols.items() if p not in have and is_optional(t, c)]:
                 log.warning("%s.%s (%s) not in DB: exported as NULL", self.tables[t], cols[c], c)
                 del cols[c]
+            clash = sorted((set(have) - set(cols.values())) & set(TABLES[t]))
+            if clash:
+                raise ConfigError("%s has columns %s that profile %s does not map, with the names "
+                                  "of logical columns: give a profile that maps them"
+                                  % (self.tables[t], ", ".join(clash), self.name))
         return self
 
     def table_of(self, physical):
@@ -93,66 +102,58 @@ class Profile:
         """Return the physical name of a logical column, or ``None`` if it is not mapped (or absent)."""
         return self.columns[table].get(col)
 
-    def where(self, table, dnf):
-        """Map a filter on logical columns to physical ones.
+    def where(self, table, conds):
+        """Map a filter on logical column names to physical ones.
 
         :param table: logical table name.
-        :param dnf: ``[[(column, op, value), ...], ...]`` (OR of ANDs), or a flat
-            ``[(column, op, value), ...]`` (one AND).
-        :returns: the same filter on physical column names, as a list of lists.
+        :param conds: a list of :class:`~ear_db_export.read.Cond` on logical columns.
+        :returns: the same conditions on physical column names.
         :raises ConfigError: if a column is not in this database.
+
+        Example, with the ``ear7`` profile::
+
+            p.where("jobs", [Cond("user_id", "in", ["alice"])])
+            # [Cond("user_name", "in", ["alice"])]
         """
-        if dnf and isinstance(dnf[0], tuple):
-            dnf = [dnf]
         out = []
-        for conj in dnf:
-            mapped = []
-            for c, op, value in conj:
-                p = self.col(table, c)
-                if p is None:
-                    raise ConfigError("cannot filter on %s.%s: not in this database (profile %s)"
-                                      % (self.tables[table], c, self.name))
-                mapped.append((p, op, value))
-            out.append(mapped)
+        for c in conds:
+            physical = self.col(table, c.column)
+            if physical is None:
+                raise ConfigError("cannot filter on %s.%s: not in this database (profile %s)"
+                                  % (self.tables[table], c.column, self.name))
+            out.append(Cond(physical, c.op, c.value))
         return out
 
-    def logical(self, table, t, columns=None):
-        """Turn a table with physical names into logical columns and types.
+    def to_logical(self, table, t):
+        """Rename the columns of a table read from the database to their logical names.
 
-        ``FLOAT`` columns (float32) go through their shortest decimal text, so a
-        stored 0.1 reads as 0.1, as the MySQL protocol returns it, and not as
-        0.10000000149011612.
+        Columns the profile maps get their logical name; any other column (one
+        this EAR build adds) keeps its physical name. Types and values are not
+        touched, so :meth:`to_physical` gives the table back exactly.
 
         :param table: logical table name.
-        :param t: ``pyarrow.Table`` with physical column names (extra columns are ignored).
-        :param columns: logical columns to return, in order; default all of :data:`TABLES`.
-        :returns: a table with those columns, typed as :data:`~ear_db_export.read.ARROW`;
-            a column the profile or the table lacks is NULL.
-        """
-        names = list(columns or TABLES[table])
-        if t.num_rows == 0:  # zero-chunk columns crash some kernels: build it empty
-            return pa.schema([(c, ARROW[col_type(table, c)]) for c in names]).empty_table()
-        arrays = []
-        for c in names:
-            typ, p = ARROW[col_type(table, c)], self.col(table, c)
-            if p is None or p not in t.column_names:
-                arrays.append(pa.nulls(t.num_rows, typ))
-                continue
-            values = t[p]
-            if pa.types.is_float32(values.type):
-                values = pc.cast(values, pa.string())
-            arrays.append(pc.cast(values, typ))
-        return pa.Table.from_arrays(arrays, names=names)
+        :param t: ``pyarrow.Table`` with physical column names.
+        :returns: the same table with logical column names.
 
-    def physical(self, table, t):
-        """Rename the logical columns of a table to this version's physical names.
+        Example, with the ``ear7`` profile on ``Jobs``::
+
+            ["job_id", "app_id", "user_name", "pod_uuid"]  ->  ["job_id", "local_id", "user_id", "pod_uuid"]
+        """
+        names = {p: c for c, p in self.columns[table].items()}
+        return t.rename_columns([names.get(c, c) for c in t.column_names])
+
+    def to_physical(self, table, t):
+        """Rename the columns of a table from logical names back to this version's physical names.
+
+        The inverse of :meth:`to_logical`: mapped columns get their physical
+        name, others keep theirs. Types and values are not touched.
 
         :param table: logical table name.
         :param t: ``pyarrow.Table`` with logical column names.
-        :returns: the mapped columns, renamed; unmapped ones are left out. Types are unchanged.
+        :returns: the same table with physical column names.
         """
-        keep = [c for c in t.column_names if self.col(table, c) is not None]
-        return t.select(keep).rename_columns([self.col(table, c) for c in keep])
+        names = self.columns[table]
+        return t.rename_columns([names.get(c, c) for c in t.column_names])
 
 
 def load_profile(name_or_path):

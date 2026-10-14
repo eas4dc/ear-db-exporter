@@ -1,8 +1,12 @@
+"""Schema profiles, check, the id search and SQL types (no database)."""
+import subprocess
+import sys
+
 import pyarrow as pa
 import pytest
 
 from ear_db_export.config import ConfigError
-from ear_db_export.read import arrow_schema, col_type, is_optional
+from ear_db_export.read import Cond, col_type, is_optional
 from ear_db_export.read.sql import mariadb, profile as schema
 from ear_db_export.read.sql.queries import bisect_id
 
@@ -19,27 +23,32 @@ def live_from(profile, drop=()):
 
 @pytest.mark.parametrize("name", schema.available_profiles())
 def test_bundled_profiles_are_valid(name):
+    """Every bundled profile loads and maps every logical table."""
     schema.load_profile(name)
 
 
 def test_detect_picks_unique_profile():
+    """Each EAR version's columns autodetect its profile."""
     for name in ("ear4", "ear6", "ear7"):
         live = live_from(schema.load_profile(name))
         assert schema.detect(live).name == name
 
 
 def test_detect_fails_on_no_match():
+    """No matching profile is a configuration error."""
     with pytest.raises(ConfigError, match="no profile"):
         schema.detect({})
 
 
 def test_bind_drops_missing_optional():
+    """An optional column the database lacks is dropped (read as NULL)."""
     p = schema.load_profile("ear6")
     p.bind(live_from(p, drop=("GPU_energy",)))
     assert "gpu_energy" not in p.columns["periodic_metrics"]
 
 
 def test_diff_reports_missing_and_type():
+    """check reports missing columns, wrong types and extra columns."""
     p = schema.load_profile("ear6")
     live = live_from(p, drop=("DC_energy",))
     live["Jobs"]["policy"] = "int"
@@ -51,6 +60,7 @@ def test_diff_reports_missing_and_type():
 
 
 def test_invalid_profile(tmp_path):
+    """A typo in a profile is an error, not a silent gap."""
     f = tmp_path / "bad.toml"
     f.write_text('[tables.jobs]\nname = "Jobs"\n[tables.jobs.columns]\nnope = "x"\n')
     with pytest.raises(ConfigError, match="unknown column jobs.nope"):
@@ -58,6 +68,7 @@ def test_invalid_profile(tmp_path):
 
 
 def test_bisect_id_finds_neighbours():
+    """The id search finds the rows on each side of a time, with id gaps."""
     # ids with gaps; end_time not monotonic within the margin
     rows = {1: 100, 2: 110, 5: 105, 6: 200, 9: 210}
     probe = lambda i: next(((k, rows[k]) for k in sorted(rows) if k >= i), None)
@@ -72,7 +83,19 @@ def test_bisect_id_finds_neighbours():
     ("varchar(64)", pa.string()), ("uuid", pa.string()), ("timestamp", pa.timestamp("us", "UTC")),
 ])
 def test_arrow_type(column_type, expected):
+    """Each SQL column type maps to an Arrow type that holds it exactly."""
     assert mariadb.arrow_type(column_type) == expected
+
+
+def test_dropped_stream_rows_are_an_error():
+    """pymysql only warns when it drops a streamed result's unread rows: with mariadb imported it is an error.
+
+    Run in a new interpreter: pytest resets warning filters inside each test.
+    """
+    code = ("import warnings, ear_db_export.read.sql.mariadb\n"
+            "warnings.warn('Previous unbuffered result was left incomplete')")
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert run.returncode != 0 and "UserWarning: Previous unbuffered" in run.stderr
 
 
 # == Profiles are total over EAR's DDL =============================================
@@ -94,6 +117,7 @@ def test_profile_covers_ddl(name):
 
 
 def test_ddl_schema_types_keys_and_nullability():
+    """EAR's DDL parses into column types, keys and nullability."""
     jobs = {c[0]: c[1:] for c in schema.ddl_schema("ear7")["Jobs"]}
     assert jobs["job_id"] == ("int unsigned", False, True)
     assert jobs["user_name"] == ("varchar(128)", True, False)
@@ -105,11 +129,13 @@ def test_ddl_schema_types_keys_and_nullability():
 
 
 def test_like_copies_columns():
+    """like = copies another table's columns (Learning_*)."""
     p = schema.load_profile("ear4")
     assert p.columns["learning_jobs"] == p.columns["jobs"] and p.columns["jobs"]["job_id"] == "id"
 
 
 def test_missing_optional_table_is_not_a_mismatch():
+    """A missing optional table is reported but matches."""
     p = schema.load_profile("ear6")
     live = live_from(p)
     del live["Loops"], live["Learning_jobs"]
@@ -120,22 +146,23 @@ def test_missing_optional_table_is_not_a_mismatch():
     assert "loops" not in p.tables and "jobs" in p.tables
 
 
-def test_logical_float32_keeps_the_decimal_value():
-    p = schema.load_profile("ear6")
-    phys = pa.table({"id": pa.array([1], pa.uint32()), "DC_power": pa.array([310.523], pa.float32()),
-                     "time": pa.array([0.1], pa.float32())})
-    out = p.logical("power_signatures", phys, ["id", "dc_power", "time", "edp"])
-    assert out.to_pylist() == [{"id": 1, "dc_power": 310.523, "time": 0.1, "edp": None}]
-    assert out.schema.field("dc_power").type == pa.float64()
-    assert p.logical("power_signatures", phys.slice(0, 0)).num_rows == 0
-
-
-def test_physical_inverts_logical_and_where_maps_names():
+def test_renames_are_reversible_and_where_maps_names():
+    """to_logical/to_physical only rename (extra columns kept); where maps each condition's column."""
     p = schema.load_profile("ear7")
-    t = pa.table({"job_id": [1], "local_id": [2], "app_name": ["x"], "user_id": ["u"]})
-    phys = p.physical("jobs", t)
-    assert phys.column_names == ["job_id", "app_id", "app_name", "user_name"]
-    assert p.logical("jobs", phys, t.column_names).equals(t)
-    assert p.where("jobs", [("user_id", "in", ["u"])]) == [[("user_name", "in", ["u"])]]
+    phys = pa.table({"job_id": [1], "app_id": [2], "app_name": ["x"], "user_name": ["u"],
+                     "pod_uuid": ["k8s"]})
+    logical = p.to_logical("jobs", phys)
+    assert logical.column_names == ["job_id", "local_id", "app_name", "user_id", "pod_uuid"]
+    assert p.to_physical("jobs", logical).equals(phys)
+    assert p.where("jobs", [Cond("user_id", "in", ["u"])]) == [Cond("user_name", "in", ["u"])]
     with pytest.raises(ConfigError, match="job_type"):
-        p.where("jobs", [("job_type", "=", 0)])  # gone in EAR 7
+        p.where("jobs", [Cond("job_type", "=", 0)])  # gone in EAR 7
+
+
+def test_bind_refuses_unmapped_column_with_a_logical_name():
+    """An extra column named like a logical column would make two columns with one name."""
+    p = schema.load_profile("ear7")
+    live = live_from(p)
+    live["Jobs"]["local_id"] = "int"  # EAR 7 maps local_id to app_id
+    with pytest.raises(ConfigError, match="local_id"):
+        p.bind(live)

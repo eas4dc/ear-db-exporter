@@ -3,9 +3,9 @@ ear-db-export
 
 ear-db-export reads what EAR measures (node power and energy, jobs, per-job
 signatures, loops, events) from EAR's database, without writing to it, and
-writes it to files: the tables as stored, filtered by dates, jobs, users or
-nodes (a *bundle*, to archive or send elsewhere), or clean datasets for
-analysis with standard tools.
+writes it to files with one command, ``export LAYOUT``: the tables as stored
+(``raw``, to archive or send elsewhere), or clean layouts for analysis with
+standard tools (``node_metrics``, ``job_nodes``, ``power_signatures``, ``eacct``).
 
 .. grid:: 1 2 2 3
    :gutter: 3
@@ -14,7 +14,7 @@ analysis with standard tools.
       :link: guide
       :link-type: doc
 
-      Install, filters, the commands, bundles, daily timer, sending an extract.
+      Install, layouts, filters, bundles and paths, cron with --resume, sending an extract.
 
       +++
       Start here
@@ -26,7 +26,7 @@ analysis with standard tools.
       What each file and column holds, with units. No EAR knowledge needed.
 
       +++
-      For data users
+      For anyone reading the files
 
    .. grid-item-card:: What it does to your database
       :link: audit
@@ -35,13 +35,13 @@ analysis with standard tools.
       Account, read-only session, every query, what leaves the site, personal data.
 
       +++
-      For site administrators
+      For sysadmins
 
    .. grid-item-card:: Architecture
       :link: architecture
       :link-type: doc
 
-      The data flow, logical and physical names, what each module may know, how to extend it.
+      The data flow, the two selections, access paths, what each module may know, how to extend it.
 
       +++
       Start here to read the code
@@ -53,16 +53,16 @@ analysis with standard tools.
       Every module, in the order a run uses them, and the schema profiles.
 
       +++
-      ``selection`` · ``read`` · ``extract`` · ``canonical`` · ``write``
+      ``layouts`` · ``selection`` · ``read`` · ``clean`` · ``output``
 
    .. grid-item-card:: Python API
       :link: api
       :link-type: doc
 
-      The stable names other programs import: ear.conf, sources, profiles, extract.
+      The stable names other programs import: ear.conf, sources, profiles, selections.
 
       +++
-      ``config`` · ``read`` · ``extract``
+      ``config`` · ``read`` · ``selection``
 
 .. toctree::
    :hidden:

@@ -1,23 +1,27 @@
-"""One day of EAR records in logical names, shared by the golden, bundle and round-trip tests.
+"""One day of EAR records in logical names, shared by the source, selection, layout and CLI tests.
 
 Float values have few significant digits (0.1, 310.523): pymysql returns MariaDB
 FLOAT columns as their decimal text, so the views must show 0.1, not the
 float32 value 0.10000000149011612.
 """
 import datetime as dt
-import os
 
 import pyarrow as pa
 
-from ear_db_export.read import GPU_LINK, TABLES, arrow_schema
+from ear_db_export.read import arrow_schema
 
 DAY = dt.date(2026, 7, 4)
 T0 = int(dt.datetime(2026, 7, 4, tzinfo=dt.timezone.utc).timestamp())
 INT_MAX = 2147483647  # EAR's "unset" for end_mpi_time of non-MPI steps
-#: The view files 0.3.0 wrote from these records (tests/golden/), with these tags and salt.
-GOLDEN = os.path.join(os.path.dirname(__file__), "golden")
+#: The node tags of :data:`EAR_CONF`.
 TAGS = {"n2": "cpu", "n3": "gpu"}
-KEY = b"golden-salt"
+#: An ear.conf for the fake database: its read-only account and two tagged islands.
+EAR_CONF = """DBIp=fake
+DBCommandsUser=reader
+DBCommandsPassw=pw
+Island=0 Nodes=n2 tag=cpu
+Island=1 Nodes=n3 tag=gpu
+"""
 
 
 def _table(name, rows):
@@ -104,13 +108,3 @@ def tables():
 
 ID_STEP = 2
 
-
-def gpu_rows(t):
-    """The gpu_signatures records of signature 102, as a reader links them (GPU_LINK first)."""
-    cols = [c for c in TABLES["gpu_signatures"] if c != "id"]
-    pos = {50: 0, 54: 2, 56: 3}
-    g = t["gpu_signatures"]
-    rows = [dict(signature_id=102, gpu_index=pos[r["id"]], **{c: r[c] for c in cols})
-            for r in g.to_pylist()]
-    schema = pa.schema([(c, pa.int64()) for c in GPU_LINK] + list(arrow_schema("gpu_signatures", cols)))
-    return pa.Table.from_pylist(rows, schema=schema)

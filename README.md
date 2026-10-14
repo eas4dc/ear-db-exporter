@@ -2,37 +2,46 @@
 
 Reads the data EAR collects (node metrics, jobs, power and application
 signatures, loops, events) from its database and writes it to files, without
-ever writing to the database:
+ever writing to the database. One command, `export LAYOUT`, where the layout
+says what to write:
 
-- **`export`**: EAR's tables **as stored**, the rows you select and every row
-  they point to, as a *bundle* (Parquet + `schema.sql` + `SHA256SUMS` +
-  `manifest.json`): to archive, move to another site, or send to EAS.
-- **`view`**: clean **datasets** for analysis (joined, UTC timestamps, NULLs,
-  units), in Parquet or CSV, including `eacct`'s own CSV layout.
-- **`check`**: the account's grants and the schema profile against the database.
+| Layout | Writes one row per | Reads |
+|---|---|---|
+| `raw` | table row, **as stored**: whole tables, or the rows the filters pick and every row they point to | the tables named (default all) |
+| `node_metrics` | node, interval and metric (long format) | `Periodic_metrics` |
+| `job_nodes` | job step and node it ran on | `Jobs`, `Applications` |
+| `power_signatures` | job step and node, with EARD's power signature | … and `Power_signatures` |
+| `eacct` | job step and node, as `eacct -l -c` writes it | … `Signatures`, `GPU_signatures` |
 
+Each output is a *bundle*: the files, `SHA256SUMS`, `manifest.json` and, when
+the run has a time window, `checkpoint.json`. `check` compares the database
+with the schema profile and shows the account's grants.
+
+```mermaid
+flowchart LR
+    F[flags] --> S["selection<br/>TimeSelection or JobSelection"]
+    S --> R["source<br/>EAR's DB read-only, a bundle, eacct CSV"]
+    R --> L[layout] --> B[bundle in --out]
 ```
-filters ─► Selection ─► source (EAR's DB, read-only, or a bundle) ─► follow EAR's links ─┬─► export ─► OUT/<Table>.parquet …
-                                                                                          └─► view ──► OUT/<dataset>.parquet|csv
-```
 
-Filters: dates (`--from/--to`), jobs (`--jobs 123,456.0,1000-2000,789.sb`),
-`--users --accounts --groups --apps --etags --policies`, nodes (`--nodes`
-hostlist, `--tags` from ear.conf), `--batch-steps`, `--sample`, `--limit`,
-`--tables`. User names, accounts and groups are pseudonymised (HMAC with your
-secret salt) before anything is written.
+Each layout takes only the filters that apply to it: dates (`--from/--to`),
+nodes (`--nodes` hostlist, `--tags` from ear.conf) and, for the job layouts,
+`--jobs 123,456.0,1000-2000,789.sb --users --accounts --groups --apps --etags
+--policies --batch-steps --limit`. `ear-db-export export LAYOUT --help` lists
+them. User names, accounts and groups are pseudonymised (HMAC with your secret
+salt) before anything is written.
 
 It connects with EAR's read-only `DBCommandsUser` from `ear.conf`, in a
 read-only session, and reads EAR 4.3, 5.x, 6.x and 7 (schema profiles
-`ear4`, `ear6`, `ear7`, autodetected); without filters any version can be
-exported whole.
+`ear4`, `ear6`, `ear7`, autodetected); `export raw` without filters needs no
+profile, so any version can be exported whole.
 
 ## Install
 
 Needs Python ≥ 3.9 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.4.0   # puts `ear-db-export` on PATH
+uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.5.0   # puts `ear-db-export` on PATH
 # or from a checkout:
 uv tool install /path/to/ear-db-exporter
 ```
@@ -45,59 +54,50 @@ Offline installs (wheels) are described in the user guide.
 umask 077; head -c 32 /dev/urandom | base64 > /etc/ear-db-export/salt   # once; keep it forever
 S="--salt-file /etc/ear-db-export/salt"
 
-ear-db-export check                                                     # exit 0 = schema profile matches
-ear-db-export export --users alice --from 2026-09-01 --to 2026-09-30 --dry-run   # queries + EXPLAIN; writes nothing
-ear-db-export export --users alice --from 2026-09-01 --to 2026-09-30 --out /data/alice-sep $S
-ear-db-export view node_metrics job_nodes --every day --incremental --out /data/ear-db-export $S   # daily timer
-ear-db-export view eacct --as csv --jobs 123456 --out /tmp/job $S       # eacct's CSV layout
-ear-db-export view app_signatures --bundle /data/alice-sep --out /tmp/a # datasets from a bundle
+ear-db-export check                                                       # exit 0 = schema profile matches
+ear-db-export export raw --out /data/ear-dump $S                         # the whole database, as stored
+ear-db-export export raw --users alice --from 2026-09-01 --to 2026-09-30 --dry-run --out /tmp/x   # queries + EXPLAIN
+ear-db-export export node_metrics --service mycluster --hive --resume --from 2026-10-01 \
+    --to "$(date -u -d '2 days ago' +%F)" --out /data/ear/node_metrics $S  # daily, from cron
+ear-db-export export eacct --as csv --jobs 123456 --out /tmp/job $S       # eacct's CSV layout
+ear-db-export export power_signatures --bundle /data/ear-dump --out /tmp/ps   # from a bundle
 ```
 
-EAR prunes `Periodic_metrics` (about every 2 months by default), so the daily
-`--incremental` run must not stop for long: missed days are lost.
+The tool does not schedule anything: a cron job runs it with `--resume`, which
+continues after the last window the bundle received. EAR prunes
+`Periodic_metrics` (about every 2 months by default), so the daily run must
+not stop for long: missed days are lost.
 
 ## Basic usage
 
 ```
-ear-db-export <check|export|view> [flags]
+ear-db-export check [--conf | --db-*] [--profile]
+ear-db-export export LAYOUT [layout flags] [source] [output]
 ```
 
-| Flags | Meaning |
-|---|---|
-| `--conf` | ear.conf to read (default `$EAR_ETC/ear/ear.conf`, else `/etc/ear/ear.conf`) |
-| `--db-host --db-port --db-name --db-user --db-password-file` | connect without ear.conf (all five) |
-| `--bundle DIR` | read a bundle instead of the database |
-| `--from --to` | a day (`YYYY-MM-DD`, `--to` included) or a UTC time |
-| `--jobs --users --accounts --groups --apps --etags --policies --nodes --tags --batch-steps --sample --limit` | filters: AND across flags, OR within a list |
-| `export --tables` | `jobs,periodic` (default), `loops`, `events`, `energy`, `learning`, `all`, or table names |
-| `view DATASET …` | `node_metrics`, `job_nodes`, `power_signatures`, `app_signatures`, `gpu_signatures`, `eacct` |
-| `--format DATASET=FORMAT`, `--format-opt KEY=VALUE` | `long` for `node_metrics`, `allocations` for `job_nodes` |
-| `--out`, `--as parquet\|csv` | output directory and file format |
-| `--salt-file` / `--no-pseudonymize` | pseudonymise user fields with this secret, or write them in clear |
-| `--every day\|month`, `--incremental`, `--lag-days`, `--overwrite` | one partition per day or month; continue after the last exported day |
-| `--dry-run` | print SQL, `EXPLAIN`, row counts and target paths; write nothing |
+Every flag of a layout: `ear-db-export export LAYOUT --help`, or the user
+guide. Flags can also come from a file, one per line (`@FILE`).
 
 Exit codes: `0` ok, `1` runtime error (DB, I/O), `2` configuration or schema
-error. `ear-db-export <command> --help` lists every flag. Upgrading from
-0.3.0: `CHANGELOG.md` maps the old commands to the new ones.
+error. Upgrading from 0.4.0: `CHANGELOG.md` maps the old commands to the new ones.
 
 ## Documentation
 
-The full documentation has the user guide (filters, bundles, sending an
-extract, offline install, systemd timer, publishing to a data lake), **the
-data** (every column with its unit, for readers who don't know EAR), **what the
-tool does to your database** (account, queries, what leaves the site, personal
-data), the architecture, the reference and the Python API. Build it and open it
-in a browser:
+The full documentation has the user guide (layouts, filters, bundles, cron,
+sending an extract, offline install), **the data** (every column with its
+unit, for readers who don't know EAR), **what the tool does to your database**
+(account, queries, what leaves the site, personal data), the architecture, the
+reference and the Python API. Build it and open it in a browser:
 
 ```bash
-uv run --group docs sphinx-build -b html docs docs/_build/html
+uv run --group docs sphinx-build -W -E -b html docs docs/_build/html
 xdg-open docs/_build/html/index.html
 ```
 
-Reading the code? Start at `src/ear_db_export/pipeline.py`, then
-`extract.py` (EAR's links) and `read/` (the sources).
-`read/sql/mariadb.py` is the only file that runs SQL.
+Reading the code? Start at `src/ear_db_export/layouts/` (one pipeline per
+layout, with its flow as a diagram in the docstring), then `selection/` (what
+each filter means) and `read/` (the sources). `read/sql/mariadb.py` is the
+only file that runs SQL.
 
 ## Development
 

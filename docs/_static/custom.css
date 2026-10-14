@@ -6,3 +6,22 @@
 
 /* Separate API entries a little more. */
 .rst-content dl.py.function, .rst-content dl.py.class { margin-bottom: 1.6em; }
+
+/* Classes stand out: a blue header and a rule down their whole body. Functions
+   and constants get a plain grey header. */
+.rst-content dl.py.class { border-left: 3px solid #2980b9; padding-left: .8em; }
+/* (!important: the theme styles every entry header with a very specific selector.) */
+.rst-content dl.py.class > dt { background: #e7f2fa !important; border-top: 3px solid #2980b9 !important;
+                                color: #1a5a8a !important; font-size: 1.05em; }
+.rst-content dl.py.function > dt, .rst-content dl.py.data > dt,
+.rst-content dl.py.exception > dt { background: #f3f3f3 !important; border-top: 2px solid #b9b9b9 !important;
+                                    color: #404040 !important; }
+
+/* Sidebar: classes in bold (marked by toc.js). */
+.wy-menu-vertical a.toc-class { font-weight: bold; }
+
+/* Long table cells wrap instead of running off the page. */
+.rst-content table.docutils td, .rst-content table.docutils th { white-space: normal; }
+
+/* A wider page than the theme's 800 px, so diagrams and tables fit. */
+.wy-nav-content { max-width: 1100px; }

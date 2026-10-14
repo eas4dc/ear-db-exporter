@@ -1,9 +1,9 @@
-"""SQL text of the reads: filters, SELECTs, and the id window search. No connection here.
+"""Build the SQL text of the reads, and the binary search that finds a time window's ids; never connects.
 
 Identifiers are quoted by the engine's ``quote`` and values are ``%s``
 placeholders, which MariaDB and PostgreSQL drivers both accept. Only
 single-table scans and primary-key lookups are generated; rows are combined
-later in pyarrow (:mod:`ear_db_export.extract`), so no query can turn into an
+later in pyarrow (:mod:`ear_db_export.selection`), so no query can turn into an
 expensive server-side join. ``Periodic_metrics`` may have no index on
 ``end_time`` (EAR's ``edb_create`` adds one unless it only prints the SQL), so
 a time window is read through a primary-key id window found by
@@ -12,35 +12,68 @@ a time window is read through a primary-key id window found by
 
 #: Keys per ``IN (...)`` list.
 IN_BATCH = 5000
-#: SQL of the DNF comparison operators (``in``/``not in`` are rendered apart).
-OPS = {"=": "=", "==": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
-       "like": "LIKE"}
+#: SQL of the comparison operators of :class:`~ear_db_export.read.Cond`
+#: (``in``, ``ranges`` and ``like_any`` are rendered apart).
+OPS = {"=": "=", ">=": ">=", "<": "<"}
 
 
-def where(quote, dnf):
-    """Render a DNF filter (an OR of ANDs) as a SQL condition with ``%s`` placeholders.
+def where(quote, conds):
+    """Render a filter, a list of conditions that must all hold, as SQL with ``%s`` placeholders.
 
     :param quote: the engine's identifier quoting function.
-    :param dnf: ``[[(column, op, value), ...], ...]`` on physical column names;
-        ``op`` is one of :data:`OPS`, ``in`` or ``not in``.
+    :param conds: a list of :class:`~ear_db_export.read.Cond` on physical column names.
     :returns: ``(sql, params)``; ``("", [])`` for an empty filter.
+
+    Example::
+
+        where(quote, [Cond("user_name", "in", ["alice", "bob"]),
+                      Cond("job_id", "ranges", [(7, 7), (100, 200)]),
+                      Cond("app_name", "like_any", ["lmp%"]),
+                      Cond("end_time", ">=", 1783123200)])
+        # ("`user_name` IN (%s, %s) AND (`job_id` IN (%s) OR `job_id` BETWEEN %s AND %s)"
+        #  " AND (`app_name` LIKE %s) AND `end_time` >= %s",
+        #  ["alice", "bob", 7, 100, 200, "lmp%", 1783123200])
     """
-    ors, params = [], []
-    for conj in dnf:
-        ands = []
-        for col, op, value in conj:
-            if op in ("in", "not in"):
-                values = list(value)
-                if not values:  # IN () is invalid SQL
-                    ands.append("1=0" if op == "in" else "1=1")
-                    continue
-                ands.append("%s %s (%s)" % (quote(col), op.upper(), ", ".join(["%s"] * len(values))))
-                params += values
-            else:
-                ands.append("%s %s %%s" % (quote(col), OPS[op]))
-                params.append(value)
-        ors.append("(%s)" % " AND ".join(ands) if ands else "1=1")
-    return " OR ".join(ors), params
+    parts, params = [], []
+    for col, op, value in conds:
+        if op == "in":
+            sql, values = _in(quote(col), list(value))
+        elif op == "ranges":
+            sql, values = _ranges(quote(col), list(value))
+        elif op == "like_any":
+            sql, values = _any(["%s LIKE %%s" % quote(col)] * len(value)), list(value)
+        else:
+            sql, values = "%s %s %%s" % (quote(col), OPS[op]), [value]
+        parts.append(sql)
+        params += values
+    return " AND ".join(parts), params
+
+
+def _in(column, values):
+    """Render ``column IN (values)``; ``1=0`` (always false) for no values, since ``IN ()`` is invalid SQL."""
+    if not values:
+        return "1=0", []
+    return "%s IN (%s)" % (column, ", ".join(["%s"] * len(values))), values
+
+
+def _ranges(column, ranges):
+    """Render "column in one of the inclusive ``(lo, hi)`` ranges": one ``IN`` for single values, a ``BETWEEN`` per range."""
+    single = [lo for lo, hi in ranges if lo == hi]
+    alternatives, params = [], []
+    if single:
+        sql, values = _in(column, single)
+        alternatives.append(sql)
+        params += values
+    for lo, hi in ranges:
+        if lo != hi:
+            alternatives.append("%s BETWEEN %%s AND %%s" % column)
+            params += [lo, hi]
+    return _any(alternatives), params
+
+
+def _any(alternatives):
+    """Join SQL conditions with ``OR`` in parentheses; ``1=0`` (always false) if there are none."""
+    return "(%s)" % " OR ".join(alternatives) if alternatives else "1=0"
 
 
 def select(quote, table, columns, conds=(), order=None, limit=None):
@@ -50,15 +83,23 @@ def select(quote, table, columns, conds=(), order=None, limit=None):
     :param table: physical table name.
     :param columns: physical column names, in order.
     :param conds: SQL conditions, joined with AND (each already parenthesised if needed).
-    :param order: column to order by, or ``None``.
+    :param order: ``[(column, "ascending" | "descending")]`` to sort by, or ``None``.
     :param limit: row limit, or ``None``.
     :returns: the SQL text.
+
+    Example::
+
+        select(quote, "Jobs", ["job_id", "end_time"], ["`end_time` >= %s"],
+               [("end_time", "descending")], 10)
+        # "SELECT `job_id`, `end_time` FROM `Jobs` WHERE `end_time` >= %s
+        #  ORDER BY `end_time` DESC LIMIT 10"
     """
     sql = "SELECT %s FROM %s" % (", ".join(quote(c) for c in columns), quote(table))
     if conds:
         sql += " WHERE " + " AND ".join(conds)
     if order:
-        sql += " ORDER BY " + quote(order)
+        sql += " ORDER BY " + ", ".join(quote(c) + (" DESC" if d == "descending" else "")
+                                        for c, d in order)
     if limit:
         sql += " LIMIT %d" % limit
     return sql

@@ -1,16 +1,24 @@
-"""Read-only export of EAR data: bundles of its tables as stored, and analysis datasets.
+"""Read-only export of EAR data: its tables as stored, or layouts for analysis.
 
-1. :mod:`~ear_db_export.selection`: which rows a run reads (the filters).
-2. :mod:`~ear_db_export.read`: the sources, EAR's SQL database
-   (:mod:`~ear_db_export.read.sql`) or a bundle (:mod:`~ear_db_export.read.bundle`).
-3. :mod:`~ear_db_export.extract`: follow EAR's links from the selected job steps
-   to every table; ``export`` writes them as stored, a *bundle*.
-4. :mod:`~ear_db_export.canonical` and :mod:`~ear_db_export.formats`: ``view``
-   builds one dataset per subject and shapes it for its consumer.
-5. :mod:`~ear_db_export.write`: atomic Parquet/CSV files, bundle checksums and manifest.
+One run reads with a *selection* from a *source*, shapes the rows with a
+*layout*, and writes them to a *bundle*:
 
-:mod:`~ear_db_export.pipeline` runs the steps for each period that
-:mod:`~ear_db_export.schedule` picks; :mod:`~ear_db_export.cli` is the command
-line and :mod:`~ear_db_export.config` reads ear.conf. The stable Python API is
-listed in ``docs/api.rst``.
+1. :mod:`~ear_db_export.read`: the sources, EAR's SQL database
+   (:mod:`~ear_db_export.read.sql`), a bundle (:mod:`~ear_db_export.read.bundle`)
+   or eacct CSV files (:mod:`~ear_db_export.read.eacct`), each with four access
+   paths: ``scan``, ``window``, ``lookup`` and ``dump``.
+2. :mod:`~ear_db_export.selection`: which rows, by family:
+   :class:`~ear_db_export.selection.timeseries.TimeSelection` (time-series tables,
+   by time and node) and :class:`~ear_db_export.selection.jobs.JobSelection`
+   (job steps, by ``Jobs`` columns, then every row they point to). Each owns its
+   flags and what they mean.
+3. :mod:`~ear_db_export.layouts`: one module per layout (``raw``,
+   ``node_metrics``, ``job_nodes``, ``power_signatures``, ``eacct``), each a
+   pipeline you read top to bottom; :mod:`~ear_db_export.clean` has the
+   cleaning helpers they share.
+4. :mod:`~ear_db_export.output`: the bundle: files at ``--path`` (or ``--hive``),
+   ``checkpoint.json``, ``SHA256SUMS`` and ``manifest.json``.
+
+:mod:`~ear_db_export.cli` is the command line and runs these steps;
+:mod:`~ear_db_export.config` reads ear.conf.
 """

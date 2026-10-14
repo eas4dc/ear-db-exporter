@@ -1,87 +1,118 @@
-"""Selection: parsing the filter flags and turning them into DNF filters on Jobs."""
+"""Selections without a database: the time window, the node and job flags, and the filter on Jobs."""
 import datetime as dt
 from types import SimpleNamespace
 
 import pytest
 
-from ear_db_export.canonical import pseudonym
 from ear_db_export.config import ConfigError
-from ear_db_export.selection import (BATCH_STEPS, Selection, from_args, glob_to_like,
-                                     parse_jobs, when)
+from ear_db_export.read import Cond
+from ear_db_export.selection import Window, epoch, nodes_of, when, window_from_args
+from ear_db_export.selection.jobs import BATCH_STEPS, JobSelection, glob_to_like, parse_jobs
+
+DAY = dt.date(2026, 7, 4)
+D0 = epoch(DAY)
+NOW = epoch(dt.date(2026, 10, 14))
 
 
-def args(**kw):
-    base = dict(from_=None, to=None, jobs=None, users=None, accounts=None, groups=None,
-                apps=None, etags=None, policies=None, nodes=None, tags=None, batch_steps=False,
-                sample=None, seed=None, limit=None, tables=None)
-    return SimpleNamespace(**dict(base, **kw))
+def flags(**kw):
+    """Parsed window flags, unset unless given."""
+    return SimpleNamespace(**dict(dict(from_=None, to=None, resume=False), **kw))
+
+
+def test_dates_include_the_day_datetimes_are_exact():
+    """--to DAY includes the day; a time is exact; both are UTC."""
+    assert epoch(DAY) == 1783123200 and epoch(DAY, end=True) == 1783123200 + 86400
+    t = when("2026-07-04T10:30")
+    assert t.tzinfo == dt.timezone.utc and epoch(t, end=True) == epoch(t) == 1783123200 + 37800
+    assert when("2026-07-04") == DAY and when("2026-07-04 10:30:00Z") == t
+
+
+def test_window():
+    """A window renders conditions on any column, and knows when it is empty."""
+    w = Window(D0, D0 + 86400)
+    assert w.conds("end_time") == [Cond("end_time", ">=", D0), Cond("end_time", "<", D0 + 86400)]
+    assert Window().conds("x") == [] and not Window().empty and Window(5, 5).empty
+    assert w.describe() == {"from": "2026-07-04T00:00:00+00:00", "to": "2026-07-05T00:00:00+00:00"}
+
+
+def test_window_from_flags():
+    """--from/--to give the window; --to in the future and an inverted window are refused."""
+    assert window_from_args(flags(from_=DAY, to=DAY), now=NOW) == Window(D0, D0 + 86400)
+    assert window_from_args(flags(), now=NOW) == Window()
+    with pytest.raises(ConfigError, match="future"):
+        window_from_args(flags(to=dt.date(2026, 10, 14)), now=NOW)  # today has not ended
+    with pytest.raises(ConfigError, match="not before"):
+        window_from_args(flags(from_=dt.date(2026, 7, 5), to=DAY), now=NOW)
+
+
+def test_resume_starts_at_the_checkpoint():
+    """--resume: --from on the first run, then the checkpoint; up to date is an empty window."""
+    resume = dict(resume=True, from_=DAY, to=dt.date(2026, 7, 10))
+    assert window_from_args(flags(**resume), None, now=NOW).start == D0
+    assert window_from_args(flags(**resume), D0 + 3 * 86400, now=NOW) == \
+        Window(D0 + 3 * 86400, D0 + 7 * 86400)
+    assert window_from_args(flags(**resume), D0 + 7 * 86400, now=NOW).empty
+    with pytest.raises(ConfigError, match="needs --to"):
+        window_from_args(flags(resume=True), now=NOW)
+    with pytest.raises(ConfigError, match="first run"):
+        window_from_args(flags(resume=True, to=DAY), None, now=NOW)
+
+
+def test_nodes_and_tags():
+    """--nodes is a hostlist, --tags the ear.conf islands; both together are a union."""
+    tags = {"g1": "gpu", "c1": "cpu"}
+    assert nodes_of("n[1-2]", "gpu", tags) == ("g1", "n1", "n2")
+    assert nodes_of(None, None, tags) == ()
+    with pytest.raises(ConfigError, match="give --conf"):
+        nodes_of(None, "gpu", {})
+    with pytest.raises(ConfigError, match="no node"):
+        nodes_of(None, "nope", tags)
 
 
 def test_parse_jobs():
-    assert parse_jobs("123, 456.0,1000-2000,789.sb,5.sbatch") == (
-        (123, 123, ()), (456, 456, (0,)), (1000, 2000, ()), (789, 789, BATCH_STEPS),
-        (5, 5, BATCH_STEPS))
-    for bad in ("x", "1.2.3", "5-3", "1-"):
-        with pytest.raises(ConfigError, match="--jobs"):
+    """eacct -j syntax plus ranges; .sb is the batch step."""
+    assert parse_jobs("123,456.0,1000-2000,789.sb") == (
+        (123, 123, ()), (456, 456, (0,)), (1000, 2000, ()), (789, 789, BATCH_STEPS))
+    for bad in ("x", "5-3", "1.2.3"):
+        with pytest.raises(ConfigError):
             parse_jobs(bad)
 
 
 def test_glob_to_like_escapes():
-    assert glob_to_like("lmp_*") == "lmp\\_%"
-    assert glob_to_like("a%b?c\\") == "a\\%b_c\\\\"
-
-
-def test_dates_include_the_day_datetimes_are_exact():
-    assert when("2026-07-04") == dt.date(2026, 7, 4)
-    assert when("2026-07-04T10:00Z") == dt.datetime(2026, 7, 4, 10, tzinfo=dt.timezone.utc)
-    s = from_args(args(from_=when("2026-07-04"), to=when("2026-07-04")), {})
-    assert s.end - s.start == 86400
-    s = from_args(args(from_=when("2026-07-04 10:00"), to=when("2026-07-04T11:00:00")), {})
-    assert s.end - s.start == 3600
-    with pytest.raises(ConfigError, match="not before"):
-        from_args(args(from_=when("2026-07-05"), to=when("2026-07-04")), {})
+    """* and ? become % and _; LIKE's own wildcards in a name are escaped."""
+    assert glob_to_like("lmp_*") == "lmp\\_%" and glob_to_like("a%b?") == "a\\%b_"
 
 
 def test_job_where_is_and_across_flags_or_within():
-    s = from_args(args(from_=when("2026-07-04"), to=when("2026-07-04"), users="a,b",
-                       jobs="7,10-20.0", apps="lmp*,python"), {})
-    where = s.job_where()
-    assert len(where) == 4  # 2 job alternatives x 2 app alternatives
-    base = [("end_time", ">=", s.start), ("end_time", "<", s.end), ("user_id", "in", ["a", "b"])]
-    assert where[0] == base + [("job_id", "=", 7), ("app_name", "like", "lmp%")]
-    assert where[3] == base + [("job_id", ">=", 10), ("job_id", "<=", 20), ("step_id", "in", [0]),
-                               ("app_name", "=", "python")]
-    assert s.steps_named() and s.job_filters()
+    """Each flag is one condition on Jobs; values of one flag are alternatives."""
+    sel = JobSelection(window=Window(D0, None), users=("alice", "bob"), apps=("lmp*",),
+                       jobs=parse_jobs("7,100-200"))
+    assert sel.where() == [Cond("end_time", ">=", D0), Cond("user_id", "in", ["alice", "bob"]),
+                           Cond("app_name", "like_any", ["lmp%"]),
+                           Cond("job_id", "ranges", [(7, 7), (100, 200)])]
+    assert JobSelection().where() == [] and not JobSelection().filters()
 
 
-def test_empty_selection_selects_everything():
-    s = Selection()
-    assert s.job_where() == [[]] and not s.filters() and s.tables == ("jobs", "periodic")
+def test_job_where_pushes_steps_only_when_every_item_names_them():
+    """--jobs 7.0,8.sb pushes the steps (a superset); --jobs 7.0,8 cannot."""
+    named = JobSelection(jobs=parse_jobs("7.0,8.sb")).where()
+    assert named[-1] == Cond("step_id", "in", sorted((0,) + BATCH_STEPS))
+    assert [c.column for c in JobSelection(jobs=parse_jobs("7.0,8")).where()] == ["job_id"]
+    assert JobSelection(batch_steps=True).where() == [Cond("step_id", "in", list(BATCH_STEPS))]
 
 
-def test_batch_steps():
-    where = Selection(batch_steps=True).job_where()
-    assert where == [[("step_id", "in", list(BATCH_STEPS))]]
+def test_what_counts_as_a_filter():
+    """filters_jobs: anything but window and nodes; filters: anything at all."""
+    assert JobSelection(limit=3).filters_jobs()
+    assert not JobSelection(nodes=("n1",)).filters_jobs() and JobSelection(nodes=("n1",)).filters()
+    assert JobSelection(window=Window(None, D0)).filters()
+    assert JobSelection(jobs=parse_jobs("7.0")).steps_named()
 
 
-def test_nodes_and_tags():
-    tags = {"n1": "cpu", "n2": "gpu", "n3": "gpu"}
-    s = from_args(args(nodes="m[1-2]", tags="gpu"), tags)
-    assert s.nodes == ("m1", "m2", "n2", "n3") and not s.job_filters() and s.filters()
-    with pytest.raises(ConfigError, match="--conf"):
-        from_args(args(tags="gpu"), {})
-    with pytest.raises(ConfigError, match="no node"):
-        from_args(args(tags="fpga"), tags)
-
-
-def test_between_intersects():
-    s = Selection(start=100, end=500)
-    assert (s.between(0, 200).start, s.between(0, 200).end) == (100, 200)
-    assert Selection().between(10, 20).start == 10
-
-
-def test_to_json_pseudonymises_users():
-    s = Selection(users=("alice",), groups=("g",), jobs=parse_jobs("1"))
-    out = s.to_json(b"k")
-    assert out["users"] == [pseudonym(b"k", "alice")] and out["groups"] == [pseudonym(b"k", "g")]
-    assert s.to_json()["users"] == ("alice",)
+def test_from_args_reads_only_the_flags_a_layout_has():
+    """job_nodes has no job filters: they read as unset; --limit must be positive."""
+    args = SimpleNamespace(nodes="n1", tags=None)
+    sel = JobSelection.from_args(args, Window(), {})
+    assert sel.nodes == ("n1",) and not sel.filters_jobs()
+    with pytest.raises(ConfigError, match="positive"):
+        JobSelection.from_args(SimpleNamespace(nodes=None, tags=None, limit=0), Window(), {})

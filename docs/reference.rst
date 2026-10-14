@@ -2,69 +2,104 @@ Reference
 =========
 
 The modules in the order a run uses them. The text comes from the
-docstrings. Data users want :doc:`data` instead; the overview is
-:doc:`architecture`.
+docstrings, which have examples, and each layout's flow as a UML diagram.
+What the files hold is in :doc:`data`; the overview is :doc:`architecture`.
 
 .. contents:: On this page
    :local:
    :depth: 1
 
-Selection (``ear_db_export.selection``)
----------------------------------------
+The package (``ear_db_export``)
+-------------------------------
+
+.. automodule:: ear_db_export
+
+Layouts (``ear_db_export.layouts``)
+-----------------------------------
+
+.. automodule:: ear_db_export.layouts
+   :members:
+   :no-value:
+
+raw
+~~~
+
+.. automodule:: ear_db_export.layouts.raw
+   :members:
+
+node_metrics
+~~~~~~~~~~~~
+
+.. automodule:: ear_db_export.layouts.node_metrics
+   :members:
+
+job_nodes
+~~~~~~~~~
+
+.. automodule:: ear_db_export.layouts.job_nodes
+   :members:
+
+power_signatures
+~~~~~~~~~~~~~~~~
+
+.. automodule:: ear_db_export.layouts.power_signatures
+   :members:
+
+eacct
+~~~~~
+
+.. automodule:: ear_db_export.layouts.eacct
+   :members:
+
+Selections (``ear_db_export.selection``)
+----------------------------------------
 
 .. automodule:: ear_db_export.selection
+   :members:
+
+Time series (``selection.timeseries``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: ear_db_export.selection.timeseries
+   :members:
+
+Job steps (``selection.jobs``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: ear_db_export.selection.jobs
    :members:
 
 Sources (``ear_db_export.read``)
 --------------------------------
 
-A source reads EAR's tables as stored. Every table and column has a
-*logical name* (:data:`~ear_db_export.read.TABLES`), the same for every EAR
-version, mapped to each version's own names by a schema profile
-(`Schema profiles`_).
-
-For example, one ``jobs`` record with logical names, whatever the source or the
-EAR version::
-
-   job_id  step_id  local_id  user_id  app_name  start_time  end_time    policy     …
-   42      0        5         alice    lammps    1783136226  1783139826  min_energy
-
 .. automodule:: ear_db_export.read
-   :no-members:
+   :members: Cond, time_conds, concat, col_type, is_optional, arrow_schema
 
 .. autodata:: ear_db_export.read.TABLES
    :no-value:
 .. autodata:: ear_db_export.read.OPTIONAL_TABLES
-   :no-value:
 .. autodata:: ear_db_export.read.TIME_COLUMNS
-.. autodata:: ear_db_export.read.GPU_LINK
-.. autofunction:: ear_db_export.read.arrow_schema
-.. autofunction:: ear_db_export.read.col_type
-.. autofunction:: ear_db_export.read.is_optional
 
-EAR's SQL database (``read.sql``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+EAR's database (``read.sql``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: ear_db_export.read.sql
    :members:
 
+SQL text (``read.sql.queries``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 .. automodule:: ear_db_export.read.sql.queries
    :members:
 
-MariaDB/MySQL engine (``read.sql.mariadb``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+MariaDB engine (``read.sql.mariadb``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: ear_db_export.read.sql.mariadb
    :members:
 
-Bundles (``read.bundle``)
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: ear_db_export.read.bundle
-   :members:
-
-Schema profiles
-~~~~~~~~~~~~~~~
+Schema profiles (``read.sql.profile``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 EAR versions name some tables and columns differently: the application name
 is ``Jobs.app_id`` in EAR 5 and 6, and the job key is ``Jobs.id`` in EAR 4.3.
@@ -117,125 +152,35 @@ not have it). ``Loops``, ``Events``, ``Periodic_aggregations``,
 
 .. logical-schema::
 
-Extract (``ear_db_export.extract``)
------------------------------------
+Bundles (``read.bundle``)
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: ear_db_export.extract
+.. automodule:: ear_db_export.read.bundle
    :members:
 
-Datasets (``ear_db_export.canonical``)
---------------------------------------
+eacct files (``read.eacct``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: ear_db_export.canonical
-   :no-members:
+.. automodule:: ear_db_export.read.eacct
+   :members: HEADER, EacctSource, EACCT_TABLES, V5_NAMES, read_csv
 
-Each function builds one dataset from the records of a period (or of the
-whole selection). The examples
-show a few columns; the full lists are in :doc:`data`.
-
-.. autofunction:: ear_db_export.canonical.node_metrics
-.. autofunction:: ear_db_export.canonical.job_nodes
-.. autofunction:: ear_db_export.canonical.power_signatures
-.. autofunction:: ear_db_export.canonical.app_signatures
-.. autofunction:: ear_db_export.canonical.gpu_signatures
-.. autofunction:: ear_db_export.canonical.eacct
-
-.. autoclass:: ear_db_export.canonical.Dataset
-.. autodata:: ear_db_export.canonical.DATASETS
+.. autodata:: ear_db_export.read.eacct.COLUMNS
    :no-value:
 
-.. list-table::
-   :header-rows: 1
-   :widths: 25 50 25
+Pseudonyms (``read.pseudonymized``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   * - Dataset
-     - Record tables read
-     - Built by
-   * - ``node_metrics``
-     - ``periodic_metrics``
-     - :func:`~ear_db_export.canonical.node_metrics`
-   * - ``job_nodes``
-     - ``jobs``, ``applications``
-     - :func:`~ear_db_export.canonical.job_nodes`
-   * - ``power_signatures``
-     - ``jobs``, ``applications``, ``power_signatures``
-     - :func:`~ear_db_export.canonical.power_signatures`
-   * - ``app_signatures``
-     - ``jobs``, ``applications``, ``signatures``
-     - :func:`~ear_db_export.canonical.app_signatures`
-   * - ``gpu_signatures``
-     - ``jobs``, ``applications``, ``signatures``, ``gpu_signatures``
-     - :func:`~ear_db_export.canonical.gpu_signatures`
-   * - ``eacct``
-     - ``jobs``, ``applications``, ``signatures``, ``power_signatures``, ``gpu_signatures``
-     - :func:`~ear_db_export.canonical.eacct`
-
-Helpers the builders share:
-
-.. autodata:: ear_db_export.canonical.NODE_METRICS
-.. autodata:: ear_db_export.canonical.TS
-.. autodata:: ear_db_export.canonical.USER_FIELDS
-.. autodata:: ear_db_export.canonical.USER_COLUMNS
-.. autodata:: ear_db_export.canonical.INPUTS
-   :no-value:
-.. autofunction:: ear_db_export.canonical.to_ts
-.. autofunction:: ear_db_export.canonical.pseudonym
-.. autofunction:: ear_db_export.canonical.pseudonymize
-.. autofunction:: ear_db_export.canonical.node_tags
-.. autofunction:: ear_db_export.canonical.jobs_x_apps
-.. autofunction:: ear_db_export.canonical.clean_jobs
-
-eacct's CSV layout (``ear_db_export.eacct``)
---------------------------------------------
-
-.. automodule:: ear_db_export.eacct
-   :no-members:
-
-.. autodata:: ear_db_export.eacct.COLUMNS
-   :no-value:
-.. autodata:: ear_db_export.eacct.HEADER
-   :no-value:
-
-Formats (``ear_db_export.formats``)
------------------------------------
-
-A format takes one dataset and the ``--format-opt`` values, and
-returns the table to write. ``--format DATASET=NAME`` chooses it; datasets
-without ``--format`` use ``wide``. A new format is a function added to
-:data:`~ear_db_export.formats.FORMATS`:
-
-.. code-block:: python
-
-   def my_format(table, opts):     # table: e.g. node_metrics; opts: {"service": "x"}
-       return out_table            # or yield several tables that share one schema
-
-.. automodule:: ear_db_export.formats
-   :no-members:
-
-.. autofunction:: ear_db_export.formats.wide
-.. autofunction:: ear_db_export.formats.long
-.. autofunction:: ear_db_export.formats.allocations
-.. autodata:: ear_db_export.formats.FORMATS
-   :no-value:
-.. autofunction:: ear_db_export.formats.resolve
-.. autofunction:: ear_db_export.formats.apply
-.. autodata:: ear_db_export.formats.LONG_METRICS
-.. autodata:: ear_db_export.formats.LONG_SCHEMA
-   :no-value:
-.. autodata:: ear_db_export.formats.LABELS
-   :no-value:
-
-Write (``ear_db_export.write``)
--------------------------------
-
-.. automodule:: ear_db_export.write
+.. automodule:: ear_db_export.read.pseudonymized
    :members:
 
-Running ``view`` and ``export`` (``pipeline``, ``schedule``)
-------------------------------------------------------------
+Cleaning (``ear_db_export.clean``)
+----------------------------------
 
-.. automodule:: ear_db_export.pipeline
+.. automodule:: ear_db_export.clean
    :members:
 
-.. automodule:: ear_db_export.schedule
+Output (``ear_db_export.output``)
+---------------------------------
+
+.. automodule:: ear_db_export.output
    :members:
