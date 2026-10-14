@@ -1,0 +1,28 @@
+# Slurm 17.11 to 19.05: slurmdbd schema versions (convert_version_table.version) 5 to 7.
+# Checked 2026-10-14 against the *_table_fields arrays of
+# src/plugins/accounting_storage/mysql/accounting_storage_mysql.c at slurm-17-11-13-2
+# (tests/fixtures/slurm/slurm-17.11.sql), 18.08 and 19.05.
+#
+# Differences vs slurm20:
+#   - het_job_id/het_job_offset are pack_job_id/pack_job_offset (renamed in 20.02).
+#   - step_table: 17.11 stores usage as max_rss, ave_cpu, ... (exported under their own
+#     names, below); 18.08 replaced them with tres_usage_in_*/tres_usage_out_*.
+
+convert = [5, 7]
+
+[renames.job]
+het_job_id = "pack_job_id"
+het_job_offset = "pack_job_offset"
+
+[optional]
+job = ["constraints", "flags", "state_reason_prev",   # 19.05
+       "submit_line", "script_hash_inx"]               # never in 17.11-19.05: NULL
+step = ["step_het_comp",                               # never in 17.11-19.05: NULL
+        "tres_usage_in_ave", "tres_usage_in_max", "tres_usage_in_tot",       # 18.08
+        "tres_usage_out_ave", "tres_usage_out_max", "tres_usage_out_tot"]
+
+# Columns only this profile exports, all optional (17.11 only).
+[extra]
+step = ["max_rss", "ave_rss", "max_vsize", "ave_vsize", "max_pages", "ave_pages",
+        "min_cpu", "ave_cpu", "max_disk_read", "ave_disk_read",
+        "max_disk_write", "ave_disk_write"]

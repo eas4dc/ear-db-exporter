@@ -41,7 +41,7 @@ profile, so any version can be exported whole.
 Needs Python ≥ 3.9 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.5.0   # puts `ear-db-export` on PATH
+uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.6.0   # puts `ear-db-export` on PATH
 # or from a checkout:
 uv tool install /path/to/ear-db-exporter
 ```
@@ -99,10 +99,33 @@ layout, with its flow as a diagram in the docstring), then `selection/` (what
 each filter means) and `read/` (the sources). `read/sql/mariadb.py` is the
 only file that runs SQL.
 
+## slurm-db-export
+
+The same package installs `slurm-db-export`, which reads Slurm's accounting
+database (slurmdbd's `slurm_acct_db`) read-only. It writes the job, step, event
+and reservation tables per cluster and month (`export raw`), and one decoded row
+per job (`export jobs`: TRES columns, state names, wait and run times), to train
+scheduling models. It covers Slurm 17.11 to 25.05.
+
+```bash
+D="--db-host slurmmaster --db-user RO_USER --db-password-file /etc/slurm-db-export/pw"
+slurm-db-export check $D
+slurm-db-export export raw $D --cluster lenox.hu --from 2026-09-01 --to 2026-10-13 \
+    --salt-file /etc/slurm-db-export/salt --out /data/slurm/raw
+slurm-db-export export jobs --bundle /data/slurm/raw --out /data/slurm/jobs
+```
+
+Everything else is in the documentation's *Slurm accounting* page (`docs/slurm.md`):
+- the account to create, and the cron re-export;
+- what it does to slurmdbd, and what is pseudonymised;
+- Slurm versions, every column, and what is out of scope.
+
 ## Development
 
 ```bash
 uv sync
 uv run pytest                                                     # unit tests, no DB (SQLite fake)
 EAR_EXPORT_TEST_CONF=$EAR_ETC/ear/ear.conf uv run pytest -m db    # integration, read-only
+SLURM_EXPORT_TEST_ARGS="--db-host H --db-user U --db-password-file F" \
+    SLURM_EXPORT_TEST_CLUSTER=lenox.hu uv run pytest -m db tests/test_slurm_live.py
 ```

@@ -1,0 +1,13 @@
+# Slurm 20.02 and later: slurmdbd schema versions (convert_version_table.version) 8 to 16.
+# Checked 2026-10-14 against the *_table_fields arrays of
+# src/plugins/accounting_storage/mysql/accounting_storage_mysql.c at slurm-20-02-7-1
+# and slurm-25-05-6-1 (tests/fixtures/slurm/slurm-{20.02,25.05}.sql).
+#
+# Every logical column keeps its physical name. Optional: columns added after 20.02.
+
+convert = [8, 16]
+
+[optional]
+job = ["submit_line",       # 21.08
+       "script_hash_inx"]   # 22.05
+step = ["step_het_comp"]    # 20.11

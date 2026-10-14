@@ -1,7 +1,7 @@
 [project]
 name = "ear-db-export"
-version = "0.5.0"
-description = "Read-only export of EAR data: its tables as stored, or layouts for analysis"
+version = "0.6.0"
+description = "Read-only export of EAR data (and of slurmdbd's accounting data): tables as stored, or layouts for analysis"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 ear-db-export = "ear_db_export.cli:main"
+slurm-db-export = "slurm_db_export.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=7"]
@@ -25,8 +26,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ear_db_export"]
+packages = ["src/ear_db_export", "src/slurm_db_export"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["db: needs a live EAR database (set EAR_EXPORT_TEST_CONF)"]
+markers = ["db: needs a live database (EAR: set EAR_EXPORT_TEST_CONF; Slurm: SLURM_EXPORT_TEST_ARGS)"]

@@ -30,14 +30,15 @@ BATCH_ROWS = 100_000
 TYPE_FAMILY = {"tinyint": "int", "smallint": "int", "mediumint": "int", "int": "int",
                "bigint": "int", "float": "float", "double": "float", "decimal": "float",
                "char": "str", "varchar": "str", "text": "str", "uuid": "str",
-               "timestamp": "ts"}
+               "tinytext": "str", "mediumtext": "str", "longtext": "str", "timestamp": "ts"}
 #: Integer ``DATA_TYPE`` → bits of the Arrow integer that holds it, for :func:`arrow_type`.
 INT_BITS = {"tinyint": 8, "smallint": 16, "mediumint": 32, "int": 32, "bigint": 64}
 #: Other ``DATA_TYPE`` → Arrow type, for :func:`arrow_type`. ``TIMESTAMP`` is read in
 #: UTC (see :func:`connect`).
 ARROW_TYPES = {"float": pa.float32(), "double": pa.float64(), "char": pa.string(),
                "varchar": pa.string(), "text": pa.string(), "uuid": pa.string(),
-               "timestamp": pa.timestamp("us", tz="UTC")}
+               "tinytext": pa.string(), "mediumtext": pa.string(), "longtext": pa.string(),
+               "blob": pa.binary(), "timestamp": pa.timestamp("us", tz="UTC")}
 
 
 def quote(name):
@@ -241,7 +242,7 @@ def arrow_type(column_type):
     :param column_type: the column's full type (``COLUMN_TYPE``), for example
         ``int(10) unsigned`` (→ ``uint32``) or ``float`` (→ ``float32``).
     :returns: a ``pyarrow.DataType``.
-    :raises ValueError: for a type EAR's schema does not use.
+    :raises ValueError: for a type neither EAR's nor slurmdbd's schema uses.
     """
     base = column_type.split("(")[0].split()[0].lower()
     if base in INT_BITS:

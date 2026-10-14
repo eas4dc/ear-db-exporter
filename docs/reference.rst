@@ -184,3 +184,54 @@ Output (``ear_db_export.output``)
 
 .. automodule:: ear_db_export.output
    :members:
+
+slurm-db-export (``slurm_db_export``)
+-------------------------------------
+
+The Slurm accounting exporter (:doc:`slurm`). It imports the engine
+(:mod:`~ear_db_export.read.sql.mariadb`), the bundle
+(:class:`~ear_db_export.output.Output`), the window and the pseudonyms from
+``ear_db_export``; these modules are the Slurm-specific part, in the order a
+run uses them.
+
+.. automodule:: slurm_db_export
+
+Command line (``slurm_db_export.cli``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: slurm_db_export.cli
+   :members:
+
+Layouts (``slurm_db_export.layouts``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: slurm_db_export.layouts
+
+.. automodule:: slurm_db_export.layouts.raw
+   :members:
+
+.. automodule:: slurm_db_export.layouts.jobs
+   :members:
+
+Reading (``slurm_db_export.read``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: slurm_db_export.read
+   :members:
+
+Schema profiles (``slurm_db_export.profile``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The profiles are ``src/slurm_db_export/profiles/slurm17.toml`` and
+``slurm20.toml``. The tests check them against Slurm's own DDL of 17.11,
+20.02 and 25.05 (``tests/fixtures/slurm/``, generated from the
+``*_table_fields`` arrays of ``accounting_storage_mysql.c``).
+
+.. automodule:: slurm_db_export.profile
+   :members:
+
+Decoding (``slurm_db_export.clean``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: slurm_db_export.clean
+   :members:

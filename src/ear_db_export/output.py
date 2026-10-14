@@ -143,6 +143,7 @@ class Output:
         ``{from}``/``{to}``, and its end becomes the checkpoint.
     :param fingerprint: salt fingerprint of the run's pseudonyms, or ``None`` in clear.
     :param dry_run: write nothing and take no lock; log the paths instead.
+    :param tool: the program named in the manifest (``slurm-db-export`` shares this class).
     :raises ConfigError: if another run holds the lock, ``--out`` holds a bundle of
         another layout or salt, or the template needs a window bound the run lacks.
 
@@ -155,9 +156,10 @@ class Output:
             out.finish({"source": source.info()})
     """
 
-    def __init__(self, out, layout, template, ext, window, fingerprint=None, dry_run=False):
+    def __init__(self, out, layout, template, ext, window, fingerprint=None, dry_run=False,
+                 tool="ear-db-export"):
         """Keep the run's settings and check that the template's {from}/{to} have a window bound."""
-        self.out, self.layout, self.template, self.ext = out, layout, template, ext
+        self.out, self.layout, self.template, self.ext, self.tool = out, layout, template, ext, tool
         self.window, self.fingerprint, self.dry_run = window, fingerprint, dry_run
         fields = template_fields(template)
         #: The per-row fields of the template, in :data:`ROW_FIELDS` order.
@@ -177,7 +179,7 @@ class Output:
             fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             self._lock.close()
-            raise ConfigError("another ear-db-export run is writing to %s" % self.out)
+            raise ConfigError("another %s run is writing to %s" % (self.tool, self.out))
         old = read_manifest(self.out)
         if old is not None and old.get("layout") != self.layout:
             self.__exit__(None, None, None)
@@ -251,7 +253,7 @@ class Output:
         _write_text(os.path.join(self.out, SUMS),
                     "".join("%s  %s\n" % (h, rel) for rel, h in sorted(sums.items())))
         now = _now()
-        manifest = dict(manifest, format=FORMAT, tool="ear-db-export " + _version(),
+        manifest = dict(manifest, format=FORMAT, tool=self.tool + " " + _version(),
                         layout=self.layout, created=old.get("created", now), finished=now,
                         salt_fingerprint=self.fingerprint, checkpoint=checkpoint,
                         texts=sorted(set(old.get("texts", [])) | set(self._texts)), outputs=outputs)

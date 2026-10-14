@@ -6,6 +6,8 @@ signatures, loops, events) from EAR's database, without writing to it, and
 writes it to files with one command, ``export LAYOUT``: the tables as stored
 (``raw``, to archive or send elsewhere), or clean layouts for analysis with
 standard tools (``node_metrics``, ``job_nodes``, ``power_signatures``, ``eacct``).
+The same package has ``slurm-db-export``, which does the same for Slurm's
+accounting database (:doc:`slurm`).
 
 .. grid:: 1 2 2 3
    :gutter: 3
@@ -36,6 +38,15 @@ standard tools (``node_metrics``, ``job_nodes``, ``power_signatures``, ``eacct``
 
       +++
       For sysadmins
+
+   .. grid-item-card:: Slurm accounting
+      :link: slurm
+      :link-type: doc
+
+      slurm-db-export: jobs, steps, events and reservations from slurmdbd, for scheduling models.
+
+      +++
+      Its own page: running, privacy, versions, columns
 
    .. grid-item-card:: Architecture
       :link: architecture
@@ -71,6 +82,7 @@ standard tools (``node_metrics``, ``job_nodes``, ``power_signatures``, ``eacct``
    guide
    data
    audit
+   slurm
 
 .. toctree::
    :hidden:

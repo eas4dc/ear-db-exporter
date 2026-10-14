@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from docutils import nodes
-from docutils.parsers.rst import Directive
+from docutils.parsers.rst import Directive, directives
 from docutils.statemachine import StringList
 from sphinx.util.nodes import nested_parse_with_titles
 
@@ -34,6 +34,7 @@ from ear_db_export import cli  # noqa: E402
 from ear_db_export.layouts import LAYOUTS  # noqa: E402
 from ear_db_export.read import TABLES  # noqa: E402
 from ear_db_export.read.sql import profile  # noqa: E402
+from slurm_db_export import cli as slurm_cli  # noqa: E402
 
 # -- Project -----------------------------------------------------------------
 project = "ear-db-export"
@@ -133,17 +134,24 @@ def _row(cells):
 
 
 class ExportHelp(Directive):
-    """``.. export-help:: LAYOUT`` — the ``--help`` text of ``export LAYOUT``, as a literal block."""
+    """``.. export-help:: LAYOUT`` — the ``--help`` text of ``export LAYOUT``, as a literal block.
+
+    ``:tool: slurm`` gives ``slurm-db-export export LAYOUT --help`` instead.
+    """
 
     required_arguments = 1
+    option_spec = {"tool": directives.unchanged}
 
     def run(self):
         os.environ["COLUMNS"] = "100"  # argparse wraps at the terminal width
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.suppress(SystemExit):
-            cli.parser().parse_args(["export", self.arguments[0], "--help"])
+            tool = slurm_cli if self.options.get("tool") == "slurm" else cli
+            tool.parser().parse_args(["export", self.arguments[0], "--help"])
         text = out.getvalue()
-        return [nodes.literal_block(text, text)]
+        block = nodes.literal_block(text, text)
+        block["language"] = "text"  # not highlighted as Python
+        return [block]
 
 
 # A module's members: classes first, then functions, then constants, each group

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.0
+
+New command, `slurm-db-export`, installed with ear-db-export: a read-only export
+of Slurm's accounting database (slurmdbd's `slurm_acct_db`), for datasets that
+train scheduling models. It shares ear-db-export's engine, bundle and
+pseudonyms. Documentation: the new *Slurm accounting* page (`docs/slurm.md`).
+
+- `check`: the account's grants, the read-only session, and the schema profile
+  compared with each cluster's tables.
+- `export raw`: `job_table` (by `time_submit`, through a `job_db_inx` range
+  and primary-key pages), the steps of those jobs, `event_table` and
+  `resv_table` (by `time_start`), and snapshots of `assoc_table`, `qos_table`
+  and `tres_table`. Optional: `--with-usage-hour` and `--with-scripts`. One file
+  per cluster, table and month; nothing is filtered out (deleted rows and jobs
+  that never started are kept). User, group and account ids are pseudonymised.
+- `export jobs`: one row per job from a raw bundle, with TRES decoded into
+  columns, `mem_req` decoded, `state_name`, UTC timestamps, `wait_s`, `run_s`,
+  `timelimit_s` and `runtime_ratio`.
+- Schema profiles `slurm17` (17.11 – 19.05) and `slurm20` (20.02 – 25.05+),
+  picked from `convert_version_table`. Columns added in later releases are
+  optional: a missing one is a warning and is listed in the manifest.
+
+ear-db-export:
+
+- `Output` takes the name of the tool for the manifest (`tool=`).
+- The MariaDB engine reads `tinytext`, `mediumtext`, `longtext` and `blob` columns.
+
 ## 0.5.0
 
 One command, `export LAYOUT`: a *layout* is what to write, and each has its own
