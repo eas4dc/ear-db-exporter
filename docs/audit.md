@@ -47,7 +47,7 @@ still open. Lists of keys go in `IN (…)` batches of at most 5000.
 | When | Query | Access |
 |---|---|---|
 | Every run | `information_schema.COLUMNS` (which tables and columns exist; compare with the profile); `SHOW GRANTS`, `@@transaction_read_only` (`check`) | — |
-| Job steps (`raw` with filters, `job_nodes`, `power_signatures`, `eacct`) | `Jobs`: `SELECT … WHERE <filters>` (time, users, …), with `--limit` `ORDER BY end_time DESC LIMIT n` | **full scan** of `Jobs` (small), except `--jobs`: primary key |
+| Job steps (`raw` with filters, `job_nodes`, `power_signatures`, `eacct`, `node_metrics` unless `--job-labels table`) | `Jobs`: `SELECT … WHERE <filters>` (time, users, …), with `--limit` `ORDER BY end_time DESC LIMIT n` | **full scan** of `Jobs` (small), except `--jobs`: primary key |
 | Their links, 5000 job steps at a time | `Applications` by `job_id IN (…)`; `Power_signatures`, `Signatures`, `GPU_signatures` by `id IN (…)`; `@@auto_increment_increment` | primary key |
 | `raw` with `Loops` (filtered) | `Loops`: one `SELECT … [WHERE job_id IN (…)] [AND node_id IN (…)]` per run | **full scan**: `Loops` has no primary key and no index, and can be the largest table. One read stays open while it streams |
 | `Periodic_metrics`, `Events`, `Periodic_aggregations` by time | `MIN(id), MAX(id)`, then two binary searches of one-row lookups by `id` (about log₂ of the table's rows each, ±1 day of margin) to find the window's ids, then `SELECT … WHERE id BETWEEN … AND <time> … [AND node/job IN (…)] ORDER BY id LIMIT 1000000`, page after page | primary key |

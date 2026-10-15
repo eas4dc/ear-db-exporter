@@ -206,27 +206,38 @@ holds, joined where they touch. Two runs on the same `--out` at once are refused
 
 The tool schedules nothing. A run with a time window records its end in
 `OUT/checkpoint.json` (the manifest points to it; it never moves back), and
-`--resume` starts there. So a cron script always passes the same flags:
+`--resume` starts there. So a cron script always passes the same flags.
+
+`node_metrics` lists the job steps on each node from `Jobs`, where EAR writes a
+step only when it ends ({doc}`data`). So export a month once all its jobs have
+ended, for example on the 8th for the month before (longest walltime 5 days):
 
 ```bash
 #!/bin/sh
-# /etc/cron.daily/ear-db-export: every complete day up to 2 days ago
+# /usr/local/sbin/ear-db-export-monthly, from /etc/cron.d/ear-db-export:
+#   0 3 8 * *  root  /usr/local/sbin/ear-db-export-monthly
 set -e
-TO=$(date -u -d '2 days ago' +%F)
+TO=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%F)   # last day of the month before
 S="--salt-file /etc/ear-db-export/salt"
 ear-db-export export node_metrics --service mycluster --hive --resume --from 2026-10-01 --to "$TO" \
     --out /data/ear/node_metrics $S
 ear-db-export export job_nodes --hive --resume --from 2026-10-01 --to "$TO" --out /data/ear/job_nodes $S
 ```
 
+A daily run (`--to "$(date -u -d '2 days ago' +%F)"`) suits `node_metrics
+--job-labels table` (the labels `Periodic_metrics` holds, read with the metrics)
+and `job_nodes`; with `--job-labels all` or `sb` it would miss every step
+still running then.
+
 - The first run starts at `--from`; later runs at the checkpoint, so missed days
   are caught up. A run that is up to date does nothing and exits `0`.
 - The checkpoint moves only when the whole run succeeded; a failed run is
   simply run again (its files are rewritten).
-- How far behind to stay (`2 days ago`: EARDBD inserts rows with a delay), when
-  to run, retries and alerts are the script's choice.
+- How far behind to stay (the longest walltime for `node_metrics`; `2 days ago`
+  for a daily run: EARDBD inserts rows with a delay), when to run, retries and
+  alerts are the script's choice.
 - **EAR prunes `Periodic_metrics` (about every 2 months by default), so a broken
-  daily run loses data.**
+  run must be fixed within weeks, or the data is lost.**
 
 For a monthly export, give one window per month:
 `--from 2026-09-01 --to 2026-09-30 --path '{layout}_{from}.{ext}'`.
@@ -254,7 +265,7 @@ Needs Python ≥ 3.9 and [uv](https://docs.astral.sh/uv/). Runtime
 dependencies: `pymysql`, `pyarrow` (and `tomli` on Python < 3.11), pinned in `uv.lock`.
 
 ```bash
-uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.6.1   # puts `ear-db-export` on PATH
+uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.7.0   # puts `ear-db-export` on PATH
 # or, from a checkout or an unpacked release:
 uv tool install /path/to/ear-db-exporter
 ```
@@ -277,8 +288,8 @@ NM="node_metrics --service mycluster --hive --out /data/ear/node_metrics --salt-
 ear-db-export check                                                     # 1. exit 0 = profile matches
 ear-db-export export $NM --from 2026-09-01 --to 2026-09-01 --dry-run   # 2. SQL, EXPLAIN, row counts, paths
 ear-db-export export $NM --from 2026-09-01 --to 2026-09-01             # 3. one real day; inspect it
-ear-db-export export $NM --resume --from 2026-09-02 --to "$(date -u -d '2 days ago' +%F)"
-                                                                        # 4. catch up, then install the cron script
+ear-db-export export $NM --resume --from 2026-09-02 --to 2026-09-30   # 4. catch up to a month whose jobs ended,
+                                                                        #    then install the cron script
 ```
 
 ## Example: publishing to a data lake
@@ -292,7 +303,7 @@ set -euo pipefail
 OUT=/data/ear-lake
 SERVICE=mycluster
 ear-db-export export node_metrics --service "$SERVICE" --resume --from 2026-10-01 \
-    --to "$(date -u -d '2 days ago' +%F)" \
+    --to "$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%F)" \
     --path "metrics/service=$SERVICE/source=ear/date={date}/ear_periodic_metrics.{ext}" \
     --out "$OUT" --salt-file /etc/ear-db-export/salt
 rclone copy "$OUT/metrics" remote:bucket/metrics     # copies new and changed files only

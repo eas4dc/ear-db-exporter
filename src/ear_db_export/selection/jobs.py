@@ -22,7 +22,8 @@ time, whatever the number of job steps.
 How each flag reaches the database:
 
 - ``--from/--to``: ``Jobs.end_time >= from AND end_time < to`` (``Jobs`` has no
-  time index: a full scan, but ``Jobs`` is small).
+  time index: a full scan, but ``Jobs`` is small). With ``overlap`` (the steps
+  ``node_metrics`` lists per interval): ``start_time < to AND end_time >= from - OVERLAP_SLACK``.
 - ``--users --accounts --groups --etags --policies``: ``IN (...)`` on ``Jobs``
   columns; ``--apps``: ``LIKE`` patterns on ``Jobs.app_name``.
 - ``--jobs``: job ids and ranges on ``Jobs.job_id``, the first column of its
@@ -53,6 +54,9 @@ BATCH_STEPS = (0xFFFFFFFB, 0xFFFFFFFE)
 #: Job steps per chunk: the unit a layout holds in memory, and the number of
 #: job ids per ``Applications`` lookup.
 CHUNK = 5000
+#: Seconds before ``--from`` in which an ``overlap`` selection's steps may end: the
+#: first intervals of the window start up to one interval (~60 s) before it.
+OVERLAP_SLACK = 300
 #: Most job ids pushed into a query as ``job_id IN (...)``; with more, rows are
 #: matched in memory only.
 IN_PUSHDOWN = 5000
@@ -78,6 +82,8 @@ class JobSelection:
     :ivar nodes: node names: only applications on these nodes, and their steps.
     :ivar batch_steps: only the batch step of each job (job granularity).
     :ivar limit: only the newest this many steps, by end time (0: all).
+    :ivar overlap: the window selects steps that **ran** in it (``start_time < end``,
+        ``end_time >= start -`` :data:`OVERLAP_SLACK`), not those that ended in it.
 
     Example, alice's job steps that ended on 2026-07-04, on nodes n1 and n2::
 
@@ -100,6 +106,7 @@ class JobSelection:
     nodes: tuple = ()
     batch_steps: bool = False
     limit: int = 0
+    overlap: bool = False
 
     @staticmethod
     def add_arguments(parser, meaning="job steps that ended in [--from, --to)", job_filters=True):
@@ -174,7 +181,7 @@ class JobSelection:
              Cond("app_name", "like_any", ["lmp%"]),
              Cond("job_id", "ranges", [(7, 7), (100, 200)])]
         """
-        conds = self.window.conds("end_time")
+        conds = self._overlap_conds() if self.overlap else self.window.conds("end_time")
         for col, values in (("user_id", self.users), ("user_acc", self.accounts),
                             ("user_group", self.groups), ("e_tag", self.etags),
                             ("policy", self.policies)):
@@ -188,6 +195,15 @@ class JobSelection:
                 conds.append(Cond("step_id", "in", sorted({s for _, _, st in self.jobs for s in st})))
         if self.batch_steps:
             conds.append(Cond("step_id", "in", list(BATCH_STEPS)))
+        return conds
+
+    def _overlap_conds(self):
+        """Return the conditions of :attr:`overlap`: the step started before the window's end and ended near or after its start."""
+        conds = []
+        if self.window.end is not None:
+            conds.append(Cond("start_time", "<", self.window.end))
+        if self.window.start is not None:
+            conds.append(Cond("end_time", ">=", self.window.start - OVERLAP_SLACK))
         return conds
 
     def chunks(self, source):

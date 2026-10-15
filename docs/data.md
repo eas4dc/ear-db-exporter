@@ -68,7 +68,7 @@ One row per node, interval and metric that has a value. `export node_metrics`.
 | `source` | | `ear` |
 | `metric_name` | | one of the metrics below |
 | `value` | float64 | the value, in the metric's unit |
-| `labels` | map | `node`; and `job_id`, `step_id` of the job EAR saw on the node in that interval (none when idle) |
+| `labels` | map | `node`; and the job steps that ran on the node during the interval, as `--job-labels` says (none when idle) |
 
 | `metric_name` | unit | meaning |
 |---|---|---|
@@ -83,8 +83,36 @@ Average power in W is `value / duration_s` for the energies. EAR replaces
 implausible readings by the tag's `max_power`, so a constant `max_power ×
 duration` (e.g. 5000 W) is an EAR error value, not a measurement. A metric EAR
 could not read (DRAM energy on some AMD CPUs, frequency or temperature when
-reading failed) has no row. `labels` keeps one job per node and interval: on a
-shared node, use `job_nodes` to find every step.
+reading failed) has no row.
+
+The job labels list the steps whose `[start_time, end_time)` overlaps the
+interval on that node, from `Jobs` and `Applications` as in `job_nodes`,
+comma-separated and sorted. `--job-labels` chooses which:
+
+| `--job-labels` | label | example | lists |
+|---|---|---|---|
+| `all` (default) | `job_steps` | `4521.0,4521.3,4521.sb` | every step, `job.step`; `job.sb` for the batch step |
+| `sb` | `job_ids` | `4521,4533` | the jobs whose batch step ran there: one name per job. Jobs without a batch step (`salloc` + `srun`) are not listed |
+| `table` | `job_id`, `step_id` | `4521`, `0` | the one step the `Periodic_metrics` row holds; `Jobs` is not read. On a shared node that is one of the steps only |
+
+The batch step spans the whole job, so with `all` a job that runs `srun`
+steps is listed twice (`4521.0,4521.sb`); a job whose work runs in the batch
+script itself has only `4521.sb`. A step that ran 2 s of the interval is listed
+like one that ran all of it. The labels tell **who was on the node**, the
+cluster's occupancy: the value is still the whole node's, and is not split
+between the steps (each step's own power is in `power_signatures`). To expand
+the list: `unnest(string_split(labels['job_steps'], ','))` (DuckDB).
+
+```{important}
+EAR writes a step to `Jobs` when it **ends**. A step still running when the
+export runs is not listed, and a later run does not go back to add it. Export a
+period once every job of it has ended: at least the cluster's longest walltime
+after its last day (see the monthly cron in {doc}`guide`).
+```
+
+Comparing with `table` on a test cluster: EAR's own label also covers steps
+it measured but never wrote to `Jobs` (failed jobs), and lingers on the node
+for up to half an hour after a step ends.
 
 ## job_nodes: who ran where, and when
 

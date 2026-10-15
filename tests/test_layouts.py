@@ -1,4 +1,7 @@
 """Layouts: the rows each one builds from the fake database's records."""
+from types import SimpleNamespace
+
+import pyarrow as pa
 import pytest
 
 from ear_db_export.clean import TS, typed
@@ -7,7 +10,8 @@ from ear_db_export.layouts import LAYOUTS, eacct, job_nodes, node_metrics, power
 from ear_db_export.read import concat
 from ear_db_export.read.eacct import COLUMNS, HEADER
 from ear_db_export.read.sql import SqlSource
-from ear_db_export.selection.jobs import JobSelection
+from ear_db_export.selection import Window
+from ear_db_export.selection.jobs import BATCH_STEPS, JobSelection
 
 import fakedata
 from fakedb import DBCONF, make_engine
@@ -72,6 +76,45 @@ def test_node_metrics_long_rows():
     assert idle["service"] == "snellius" and idle["source"] == "ear"
     empty = list(node_metrics.long_rows(pm.slice(0, 0), "x"))
     assert [t.num_rows for t in empty] == [0]  # the schema, for an empty file
+
+
+def test_node_metrics_job_steps_lists_every_step_that_ran():
+    """job_steps: steps overlapping [start, end), sorted by job and step, deduplicated; batch step as job.sb."""
+    batch = BATCH_STEPS[0]
+    rows = [(10, 0, 100, 200), (9, 2, 150, 170), (9, 2, 120, 130),  # 9.2 twice (two local ids)
+            (9, 0, 0, 100),                                       # ended at the interval's start
+            (11, 0, 160, 300),                                    # started at its end
+            (12, 1, -10000, 10000),                               # long: started well before
+            (9, batch, 1, 1000),                                  # batch step: 9.sb
+            (0, 0, 0, 1000)]                                      # EAR's 0 start time: left out
+    per_node = pa.table({"job_id": [r[0] for r in rows], "step_id": [r[1] for r in rows],
+                         "start_time": [r[2] for r in rows], "end_time": [r[3] for r in rows],
+                         "node_id": ["n1"] * len(rows)})
+    steps = node_metrics.steps_by_node([SimpleNamespace(per_node=per_node)])
+    pm = typed("periodic_metrics", pa.table({
+        "start_time": [100, 100], "end_time": [160, 160], "node_id": ["n1", "n2"],
+        "job_id": [0, 0], "step_id": [0, 0], "dc_energy": [1, 1]}))
+    out = concat(list(node_metrics.long_rows(pm, "s", steps))).to_pylist()
+    assert [dict(r["labels"]) for r in out] == [{"node": "n1", "job_steps": "9.2,9.sb,10.0,12.1"},
+                                                {"node": "n2"}]
+    jobs = node_metrics.steps_by_node([SimpleNamespace(per_node=per_node)], jobs_only=True)
+    out = concat(list(node_metrics.long_rows(pm, "s", jobs))).to_pylist()
+    assert dict(out[0]["labels"]) == {"node": "n1", "job_ids": "9,10,12"}  # one name per job
+
+
+def test_node_metrics_job_steps_from_the_database(source):
+    """From Jobs and Applications: n2 ran 7.0 (two local ids), n3 job 8's batch step; sb: only job 8."""
+    window = Window(T0, T0 + 86400)
+    pm = typed("periodic_metrics", fakedata.tables()["periodic_metrics"])
+
+    def labels(**kw):
+        steps = node_metrics.steps_by_node(
+            JobSelection(window=window, overlap=True, batch_steps=kw.get("jobs_only", False)).chunks(source), **kw)
+        rows = concat(list(node_metrics.long_rows(pm, "s", steps))).to_pylist()
+        return {tuple(sorted(dict(r["labels"]).items())) for r in rows}
+    assert labels() == {(("node", "n1"),), (("job_steps", "7.0"), ("node", "n2")),
+                        (("job_steps", "8.sb"), ("node", "n3"))}
+    assert labels(jobs_only=True) == {(("node", "n1"),), (("node", "n2"),), (("job_ids", "8"), ("node", "n3"))}
 
 
 def test_job_nodes_rows(source):

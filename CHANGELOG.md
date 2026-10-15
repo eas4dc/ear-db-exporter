@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0
+
+- `node_metrics`: `labels['job_steps']` lists every job step (`job.step`,
+  `job.sb` for the batch step, comma-separated) that ran on the node during the
+  interval, from `Jobs` and `Applications`. `--job-labels sb` lists the jobs
+  instead (`job_ids`, from their batch steps); `--job-labels table` keeps
+  `job_id`/`step_id`, the one step `Periodic_metrics` holds.
+  Steps are in `Jobs` once they end: the docs now suggest a monthly cron, run
+  once the month's jobs have ended.
+
 ## 0.6.1
 
 - Arrow uses the system allocator, in both commands (`ARROW_DEFAULT_MEMORY_POOL`

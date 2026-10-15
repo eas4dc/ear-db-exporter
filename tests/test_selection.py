@@ -7,7 +7,8 @@ import pytest
 from ear_db_export.config import ConfigError
 from ear_db_export.read import Cond
 from ear_db_export.selection import Window, epoch, nodes_of, when, window_from_args
-from ear_db_export.selection.jobs import BATCH_STEPS, JobSelection, glob_to_like, parse_jobs
+from ear_db_export.selection.jobs import (BATCH_STEPS, OVERLAP_SLACK, JobSelection, glob_to_like,
+                                          parse_jobs)
 
 DAY = dt.date(2026, 7, 4)
 D0 = epoch(DAY)
@@ -91,6 +92,13 @@ def test_job_where_is_and_across_flags_or_within():
                            Cond("app_name", "like_any", ["lmp%"]),
                            Cond("job_id", "ranges", [(7, 7), (100, 200)])]
     assert JobSelection().where() == [] and not JobSelection().filters()
+
+
+def test_job_where_overlap_selects_steps_that_ran_in_the_window():
+    """overlap: started before the end, ended at most OVERLAP_SLACK before the start."""
+    sel = JobSelection(window=Window(D0, D0 + 86400), overlap=True)
+    assert sel.where() == [Cond("start_time", "<", D0 + 86400),
+                           Cond("end_time", ">=", D0 - OVERLAP_SLACK)]
 
 
 def test_job_where_pushes_steps_only_when_every_item_names_them():

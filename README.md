@@ -8,7 +8,7 @@ says what to write:
 | Layout | Writes one row per | Reads |
 |---|---|---|
 | `raw` | table row, **as stored**: whole tables, or the rows the filters pick and every row they point to | the tables named (default all) |
-| `node_metrics` | node, interval and metric (long format) | `Periodic_metrics` |
+| `node_metrics` | node, interval and metric (long format), with the job steps on the node | `Periodic_metrics`, `Jobs`, `Applications` |
 | `job_nodes` | job step and node it ran on | `Jobs`, `Applications` |
 | `power_signatures` | job step and node, with EARD's power signature | … and `Power_signatures` |
 | `eacct` | job step and node, as `eacct -l -c` writes it | … `Signatures`, `GPU_signatures` |
@@ -41,7 +41,7 @@ profile, so any version can be exported whole.
 Needs Python ≥ 3.9 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.6.1   # puts `ear-db-export` on PATH
+uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.7.0   # puts `ear-db-export` on PATH
 # or from a checkout:
 uv tool install /path/to/ear-db-exporter
 ```
@@ -58,15 +58,17 @@ ear-db-export check                                                       # exit
 ear-db-export export raw --out /data/ear-dump $S                         # the whole database, as stored
 ear-db-export export raw --users alice --from 2026-09-01 --to 2026-09-30 --dry-run --out /tmp/x   # queries + EXPLAIN
 ear-db-export export node_metrics --service mycluster --hive --resume --from 2026-10-01 \
-    --to "$(date -u -d '2 days ago' +%F)" --out /data/ear/node_metrics $S  # daily, from cron
+    --to "$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%F)" --out /data/ear/node_metrics $S  # monthly, from cron
 ear-db-export export eacct --as csv --jobs 123456 --out /tmp/job $S       # eacct's CSV layout
 ear-db-export export power_signatures --bundle /data/ear-dump --out /tmp/ps   # from a bundle
 ```
 
 The tool does not schedule anything: a cron job runs it with `--resume`, which
-continues after the last window the bundle received. EAR prunes
-`Periodic_metrics` (about every 2 months by default), so the daily run must
-not stop for long: missed days are lost.
+continues after the last window the bundle received. `node_metrics` lists the
+job steps that ran on each node, and EAR records a step only when it ends, so
+run it monthly, once the month's jobs have ended (e.g. on the 8th). EAR prunes
+`Periodic_metrics` (about every 2 months by default), so the run must not stop
+for long: missed months are lost.
 
 ## Basic usage
 

@@ -1,6 +1,6 @@
 [project]
 name = "ear-db-export"
-version = "0.6.1"
+version = "0.7.0"
 description = "Read-only export of EAR data (and of slurmdbd's accounting data): tables as stored, or layouts for analysis"
 readme = "README.md"
 license = "Apache-2.0"
