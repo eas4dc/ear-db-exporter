@@ -129,3 +129,15 @@ EAR_EXPORT_TEST_CONF=$EAR_ETC/ear/ear.conf uv run pytest -m db    # integration,
 SLURM_EXPORT_TEST_ARGS="--db-host H --db-user U --db-password-file F" \
     SLURM_EXPORT_TEST_CLUSTER=lenox.hu uv run pytest -m db tests/test_slurm_live.py
 ```
+
+## License and funding
+
+Copyright 2026 Energy Aware Solutions S.L.
+
+Apache License 2.0, see [LICENSE](LICENSE).
+
+This work is funded by the European Union under the Horizon Europe project
+ODISSEE (Grant Agreement No. 101188332). Views and opinions expressed are those
+of the author(s) only and do not necessarily reflect those of the European
+Union. Neither the European Union nor the granting authority can be held
+responsible for them.
