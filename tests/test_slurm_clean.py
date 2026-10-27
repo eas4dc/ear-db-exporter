@@ -16,6 +16,12 @@ def test_parse_tres():
     assert parse_tres("") == {} and parse_tres(None) == {}
 
 
+def test_parse_tres_drops_no_val():
+    """NO_VAL64 and INFINITE64 (energy without energy accounting) are left out: no int64 holds them."""
+    assert parse_tres("1=16,3=18446744073709551614,4=1") == {1: 16, 4: 1}
+    assert parse_tres("3=18446744073709551615") == {}
+
+
 def test_tres_names():
     """type, or type/name, made column-safe."""
     t = pa.table({"id": [1, 1001, 1002, 6], "type": ["cpu", "gres", "gres", "fs"],
@@ -29,6 +35,8 @@ def test_tres_columns_have_every_tres():
     assert list(cols) == ["req_cpu", "req_mem", "req_node", "req_gres_gpu"]
     assert cols["req_cpu"].to_pylist() == [64, None, None]
     assert cols["req_gres_gpu"].to_pylist() == [4, None, None]
+    cols = tres_columns(pa.array(["1=16,2=%d" % NO_VAL64]), NAMES, "alloc_")
+    assert cols["alloc_cpu"].to_pylist() == [16] and cols["alloc_mem"].to_pylist() == [None]
 
 
 def test_decode_mem_req():

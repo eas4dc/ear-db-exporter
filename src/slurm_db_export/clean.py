@@ -71,24 +71,28 @@ def tres_names(tres):
 
 
 def parse_tres(text):
-    """Parse one TRES string into ``{id: count}``.
+    """Parse one TRES string into ``{id: count}``, leaving out ``NO_VAL64``/``INFINITE64``.
+
+    slurmdbd stores a TRES it has no value for as ``NO_VAL64`` (``3=18446744073709551614``:
+    energy, without energy accounting); it does not fit an int64 column.
 
     Example: ``parse_tres("1=64,2=256000,1001=4")`` is ``{1: 64, 2: 256000, 1001: 4}``;
-    ``""`` and ``None`` give ``{}``.
+    ``parse_tres("1=64,3=18446744073709551614")`` is ``{1: 64}``; ``""`` and ``None`` give ``{}``.
     """
     out = {}
     for item in (text or "").split(","):
         if "=" in item:
             k, v = item.split("=", 1)
-            out[int(k)] = int(v)
+            if int(v) < NO_VAL64:
+                out[int(k)] = int(v)
     return out
 
 
 def tres_columns(arr, names, prefix):
     """Decode a column of TRES strings into one int64 column per TRES of ``tres_table``.
 
-    Every TRES of ``names`` gets a column, null where the string lacks it, so
-    every batch has the same columns.
+    Every TRES of ``names`` gets a column, null where the string lacks it or holds
+    ``NO_VAL64``/``INFINITE64``, so every batch has the same columns.
 
     :param arr: array of TRES strings.
     :param names: ``{id: name}`` from :func:`tres_names`.

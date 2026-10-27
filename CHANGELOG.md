@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `slurm-db-export export jobs`: a TRES stored as `NO_VAL64` (`3=18446744073709551614`,
+  energy without energy accounting) is null in `req_<tres>`/`alloc_<tres>`; it failed
+  the export with `OverflowError: Python int too large to convert to C long`.
+
 ## 0.7.0
 
 - `node_metrics`: `labels['job_steps']` lists every job step (`job.step`,
