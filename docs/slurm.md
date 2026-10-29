@@ -188,7 +188,7 @@ Times are Unix seconds (UTC), and `0` means "not yet". Slurm's "no value"
 
 | Column | Type | Meaning |
 |---|---|---|
-| `req_<tres>`, `alloc_<tres>` | int | One column per TRES of `tres_table`, named `type` or `type_name`: `req_cpu`, `req_mem` (MB), `req_node`, `alloc_billing`, `alloc_gres_gpu`, … Null when the string lacks that TRES. |
+| `req_<tres>`, `alloc_<tres>` | int | One column per TRES of `tres_table`, named `type` or `type_name`: `req_cpu`, `req_mem` (MB), `req_node`, `alloc_billing`, `alloc_gres_gpu`, … Null when the string lacks that TRES or stores it as `NO_VAL64` (e.g. `alloc_energy` without energy accounting). |
 | `mem_req_mb`, `mem_per_cpu` | int, bool | `mem_req` decoded: the MB, and whether they are per CPU (else per node). |
 | `state_name` | string | As `sacct` names it: a flag first (`REQUEUED`, `RESIZING`, `REVOKED`, …), else `PENDING`, `RUNNING`, `SUSPENDED`, `COMPLETED`, `CANCELLED`, `FAILED`, `TIMEOUT`, `NODE_FAIL`, `PREEMPTED`, `BOOT_FAIL`, `DEADLINE`, `OUT_OF_MEMORY`. |
 | `time_submit_ts`, `time_eligible_ts`, `time_start_ts`, `time_end_ts`, `mod_time_ts` | timestamp (UTC) | The times; null for `0`. |
