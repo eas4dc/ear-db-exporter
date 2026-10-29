@@ -265,7 +265,7 @@ Needs Python ≥ 3.9 and [uv](https://docs.astral.sh/uv/). Runtime
 dependencies: `pymysql`, `pyarrow` (and `tomli` on Python < 3.11), pinned in `uv.lock`.
 
 ```bash
-uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.7.0   # puts `ear-db-export` on PATH
+uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.7.1   # puts `ear-db-export` on PATH
 # or, from a checkout or an unpacked release:
 uv tool install /path/to/ear-db-exporter
 ```

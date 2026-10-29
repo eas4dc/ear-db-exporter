@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1
 
 - `slurm-db-export export jobs`: a TRES stored as `NO_VAL64` (`3=18446744073709551614`,
   energy without energy accounting) is null in `req_<tres>`/`alloc_<tres>`; it failed

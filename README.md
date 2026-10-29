@@ -41,7 +41,7 @@ profile, so any version can be exported whole.
 Needs Python ≥ 3.9 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.7.0   # puts `ear-db-export` on PATH
+uv tool install git+https://github.com/eas4dc/ear-db-exporter@v0.7.1   # puts `ear-db-export` on PATH
 # or from a checkout:
 uv tool install /path/to/ear-db-exporter
 ```
